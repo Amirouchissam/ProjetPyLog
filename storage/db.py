@@ -19,12 +19,15 @@ _log = get_logger("storage.db")
 # Configuration de la connexion
 # ---------------------------------------------------------------------------
 DB_CONFIG = {
-    "host":            "localhost",
-    "port":            4001,
-    "dbname":          "log_analysis",
-    "user":            "postgres",
-    "password":        "123",
-    "client_encoding": "utf8",   # force UTF-8 pour éviter UnicodeDecodeError (Windows/fr)
+    "host":     "localhost",
+    "port":     4001,
+    "dbname":   "log_analysis",
+    "user":     "postgres",
+    "password": "issamam1010",
+    # Note: client_encoding intentionally omitted — let psycopg2 negotiate with the
+    # server automatically. Forcing 'utf8' on a Windows/French PostgreSQL instance
+    # causes UnicodeDecodeError when the server returns accented error messages
+    # (e.g. Latin-1 0xe9 'é') before the encoding handshake completes.
 }
 
 # SQL de création de la table principale
@@ -74,6 +77,12 @@ def get_connection():
     except OperationalError as exc:
         _log.error(
             "Impossible de se connecter à PostgreSQL (%s:%d / %s) : %s",
+            DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"], exc
+        )
+        return None
+    except Exception as exc:
+        _log.error(
+            "Erreur inattendue lors de la connexion à PostgreSQL (%s:%d / %s) : %s",
             DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"], exc
         )
         return None
