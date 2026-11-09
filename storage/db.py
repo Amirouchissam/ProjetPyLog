@@ -19,11 +19,12 @@ _log = get_logger("storage.db")
 # Configuration de la connexion
 # ---------------------------------------------------------------------------
 DB_CONFIG = {
-    "host":     "localhost",
-    "port":     4001,
-    "dbname":   "log_analysis",
-    "user":     "postgres",
-    "password": "postgres",
+    "host":            "localhost",
+    "port":            4001,
+    "dbname":          "log_analysis",
+    "user":            "postgres",
+    "password":        "123",
+    "client_encoding": "utf8",   # force UTF-8 pour éviter UnicodeDecodeError (Windows/fr)
 }
 
 # SQL de création de la table principale
