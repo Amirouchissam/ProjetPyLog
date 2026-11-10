@@ -22,6 +22,7 @@ data/geo_cache.json
 
 # Data sensible
 data/
+!data/geoip.csv
 
 # IDE
 .vscode/

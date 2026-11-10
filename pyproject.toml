@@ -1,7 +1,7 @@
 [project]
 name = "log-analysis"
 version = "0.1.0"
-description = "Add your description here"
+description = "Pipeline d'analyse des logs SSH (ingestion, regex, stockage postgresql, dashboard)"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

@@ -2,16 +2,27 @@
 main.py — Orchestrateur du pipeline Log Analysis
 =================================================
 Enchaîne les étapes dans l'ordre :
+<<<<<<< HEAD
   1. Ingestion   : lecture filtrée des fichiers auth.log
   2. Processing  : parsing regex des événements SSH
   3. Géolocation : enrichissement géographique (cache ou API)
   4. Storage     : insertion par lot dans PostgreSQL (port 4001)
   5. Serving     : génération du dashboard analytique unique (dashboard.png)
+=======
+  1. Ingestion   : lecture des fichiers de logs
+  2. Processing  : parsing des événements SSH
+  3. Géolocation : enrichissement des IP
+  4. Storage     : insertion dans PostgreSQL (port 4001)
+  5. Serving     : génération du dashboard PNG (serving/dashboard.png)
+>>>>>>> 5e2f890a8d6fdd0cda6fc28e33fe12c4b6318d8f
 
 Usage :
   python main.py [--data-dir ./data] [--skip-geo] [--skip-db] [--truncate]
 """
+<<<<<<< HEAD
 import argparse
+=======
+>>>>>>> 5e2f890a8d6fdd0cda6fc28e33fe12c4b6318d8f
 import sys
 import time
 
@@ -24,6 +35,7 @@ from storage import db
 _log = get_logger("main")
 
 
+<<<<<<< HEAD
 def parse_args():
     parser = argparse.ArgumentParser(description="SSH Log Analysis Pipeline")
     parser.add_argument(
@@ -47,6 +59,21 @@ def parse_args():
         help="Vider la table ssh_events avant l'insertion pour repartir sur des données propres",
     )
     return parser.parse_args()
+=======
+def parse_arguments() -> tuple[str, bool, bool]:
+    """
+    Lecture des options de lancement via sys.argv (sans package externe).
+    """
+    data_dir = "data"
+    skip_geo = "--skip-geo" in sys.argv
+    skip_db = "--skip-db" in sys.argv
+
+    for arg in sys.argv[1:]:
+        if arg.startswith("--data-dir="):
+            data_dir = arg.split("=")[1]
+
+    return data_dir, skip_geo, skip_db
+>>>>>>> 5e2f890a8d6fdd0cda6fc28e33fe12c4b6318d8f
 
 
 def run_pipeline(
@@ -143,14 +170,22 @@ def run_pipeline(
     # ------------------------------------------------------------------ #
     # ÉTAPE 5 — Génération du dashboard unique                            #
     # ------------------------------------------------------------------ #
+<<<<<<< HEAD
     _log.info("[5/5] Génération du dashboard visuel haute fidélité…")
+=======
+    _log.info("[5/5] Génération du dashboard PNG…")
+>>>>>>> 5e2f890a8d6fdd0cda6fc28e33fe12c4b6318d8f
     if skip_db or conn is None:
         _log.warning("[5/5] ⚠ Dashboard ignoré (aucune connexion base active).")
     else:
         try:
             ok = dashboard.generate(conn)
             if ok:
+<<<<<<< HEAD
                 _log.info("[5/5] ✓ Dashboard généré avec succès → serving/dashboard.png")
+=======
+                _log.info("[5/5] ✓ Dashboard généré : serving/dashboard.png")
+>>>>>>> 5e2f890a8d6fdd0cda6fc28e33fe12c4b6318d8f
             else:
                 _log.warning("[5/5] ⚠ Échec de la génération du dashboard.")
         except Exception as exc:
@@ -168,11 +203,17 @@ def run_pipeline(
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    data_dir_arg, skip_geo_arg, skip_db_arg = parse_arguments()
     success = run_pipeline(
+<<<<<<< HEAD
         data_dir=args.data_dir,
         skip_geo=args.skip_geo,
         skip_db=args.skip_db,
         truncate=args.truncate,
+=======
+        data_dir=data_dir_arg,
+        skip_geo=skip_geo_arg,
+        skip_db=skip_db_arg,
+>>>>>>> 5e2f890a8d6fdd0cda6fc28e33fe12c4b6318d8f
     )
     sys.exit(0 if success else 1)
