@@ -12,7 +12,6 @@ Usage :
   python main.py [--data-dir ./data]
 """
 import sys
-import argparse
 import time
 
 from logger.app_logger import get_logger
@@ -24,24 +23,19 @@ from serving import dashboard
 _log = get_logger("main")
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="SSH Log Analysis Pipeline")
-    parser.add_argument(
-        "--data-dir",
-        default="./data",
-        help="Répertoire contenant les fichiers de logs (défaut: ./data)",
-    )
-    parser.add_argument(
-        "--skip-geo",
-        action="store_true",
-        help="Désactiver la géolocalisation (utile hors ligne)",
-    )
-    parser.add_argument(
-        "--skip-db",
-        action="store_true",
-        help="Désactiver l'insertion en base (dry-run)",
-    )
-    return parser.parse_args()
+def parse_arguments() -> tuple[str, bool, bool]:
+    """
+    Lecture des options de lancement via sys.argv (sans package externe).
+    """
+    data_dir = "data"
+    skip_geo = "--skip-geo" in sys.argv
+    skip_db = "--skip-db" in sys.argv
+
+    for arg in sys.argv[1:]:
+        if arg.startswith("--data-dir="):
+            data_dir = arg.split("=")[1]
+
+    return data_dir, skip_geo, skip_db
 
 
 def run_pipeline(data_dir: str, skip_geo: bool = False, skip_db: bool = False) -> bool:
@@ -171,10 +165,10 @@ def run_pipeline(data_dir: str, skip_geo: bool = False, skip_db: bool = False) -
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    data_dir_arg, skip_geo_arg, skip_db_arg = parse_arguments()
     success = run_pipeline(
-        data_dir=args.data_dir,
-        skip_geo=args.skip_geo,
-        skip_db=args.skip_db,
+        data_dir=data_dir_arg,
+        skip_geo=skip_geo_arg,
+        skip_db=skip_db_arg,
     )
     sys.exit(0 if success else 1)
