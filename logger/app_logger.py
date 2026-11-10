@@ -1,24 +1,24 @@
 """
 Module : logger/app_logger.py
 Rôle   : Fournir un logger centralisé pour chaque module de l'application.
-         Chaque module obtient son propre logger nommé, avec sortie
-         simultanée vers la console et vers le fichier logs/app.log.
+         Utilise RotatingFileHandler (vu en cours) pour limiter la taille
+         du fichier de log avec sauvegarde automatique.
 """
 import logging
-import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # ------------------------------------------------------------------
-# Répertoire de logs : on le crée s'il n'existe pas
+# Répertoire de logs
 # ------------------------------------------------------------------
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "app.log"
 
-# Format unique pour tous les loggers
+# Format identique au cours : date|level|name|message
 _FORMATTER = logging.Formatter(
-    fmt="%(asctime)s | %(levelname)-8s | %(name)-30s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    fmt="%(asctime)s|%(levelname)s|%(name)s|%(message)s",
+    datefmt="%d-%m-%Y %H:%M:%S",
 )
 
 
@@ -26,35 +26,39 @@ def get_logger(module_name: str) -> logging.Logger:
     """
     Retourne un logger configuré pour le module donné.
 
-    - Handler fichier  : logs/app.log (level DEBUG, rotation manuelle)
-    - Handler console  : stdout      (level INFO)
+    - Handler fichier rotatif : logs/app.log
+        maxBytes=500 000 (≈500 Ko), backupCount=5
+    - Handler console : stdout (level INFO)
 
     Paramètres
     ----------
     module_name : str
-        Nom du module appelant (ex: 'ingestion.raw', 'processing.extract').
+        Nom du module appelant (ex: 'ingestion.raw').
 
     Retour
     ------
     logging.Logger
-        Logger prêt à l'emploi.
     """
     logger = logging.getLogger(module_name)
 
-    # Éviter d'ajouter plusieurs handlers si get_logger est appelé plusieurs fois
+    # Éviter l'ajout multiple de handlers
     if logger.handlers:
         return logger
 
     logger.setLevel(logging.DEBUG)
 
-    # --- Handler fichier (DEBUG et au-dessus) ---
+    # --- Handler fichier rotatif (vu en cours : RotatingFileHandler) ---
     try:
-        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            filename=LOG_FILE,
+            maxBytes=500_000,   # 500 Ko max par fichier
+            backupCount=5,      # 5 fichiers de sauvegarde
+            encoding="utf-8",
+        )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(_FORMATTER)
         logger.addHandler(file_handler)
     except OSError as exc:
-        # Si on ne peut pas écrire dans le fichier, on le signale sur stderr
         import sys
         print(f"[app_logger] Impossible de créer le fichier de log : {exc}", file=sys.stderr)
 
@@ -64,7 +68,5 @@ def get_logger(module_name: str) -> logging.Logger:
     console_handler.setFormatter(_FORMATTER)
     logger.addHandler(console_handler)
 
-    # Ne pas propager vers le root logger (évite les doublons)
     logger.propagate = False
-
     return logger
