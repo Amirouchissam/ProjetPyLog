@@ -1,12 +1,12 @@
 """
 Module : processing/extract_transforme.py
-Rôle   : Parser les lignes brutes du auth.log Linux (service sshd).
+Rôle   : Parser les lignes brutes du auth.log (service sshd).
          Extrait pour chaque événement SSH :
-           - date/heure
+           - horodatage (mois, jour, heure)
+           - nom de serveur / hôte
            - adresse IP source
            - nom d'utilisateur
            - type d'événement : 'failed', 'accepted', 'invalid_user'
-         Retourne une liste de dictionnaires structurés.
 """
 import re
 from typing import Optional, Any
@@ -15,183 +15,123 @@ from logger.app_logger import get_logger
 
 _log = get_logger("processing.extract_transforme")
 
-# ---------------------------------------------------------------------------
-# Expressions régulières
-# ---------------------------------------------------------------------------
-
-# Ligne générique du auth.log
-_PATTERN_LINE = re.compile(
-    r"(?P<month>\w{3})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})"
-    r"\s+(?P<host>\S+)\s+(?P<service>\w+)\[.+?:\s+(?P<message>.+)"
+# Motif principal regex avec groupes nommés (conforme au cours)
+pattern = re.compile(
+    r"(?P<month>\w{3})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})\s+"
+    r"(?P<host>\S+)\s+(?P<service>\w+)\[.+?:\s+(?P<message>.+)"
 )
 
-# "Failed password for [invalid user] <user> from <ip> port <port>"
-_PATTERN_FAILED = re.compile(
+# Sous-motifs pour la classification des messages sshd
+_FAILED_RE = re.compile(
     r"Failed password for(?P<invalid> invalid user)? (?P<user>\S+) from (?P<ip>[\d.]+) port \d+"
 )
-
-# "Accepted password/publickey for <user> from <ip> port <port>"
-_PATTERN_ACCEPTED = re.compile(
+_ACCEPTED_RE = re.compile(
     r"Accepted \S+ for (?P<user>\S+) from (?P<ip>[\d.]+) port \d+"
 )
-
-# "Invalid user [<user>] from <ip> port <port>"
-_PATTERN_INVALID = re.compile(
+_INVALID_RE = re.compile(
     r"Invalid user (?P<user>\S*) from (?P<ip>[\d.]+) port \d+"
 )
 
 
-def _classify_message(message: str) -> dict | None:
+def _classify_message(message: str) -> Optional[dict[str, Any]]:
     """
-    Tente de classer un message sshd et retourne un dict structuré ou None.
-
-    Champs retournés
-    ----------------
-    event_type : 'failed' | 'accepted' | 'invalid_user'
-    ip         : adresse IP source
-    username   : nom d'utilisateur (peut être vide pour 'invalid_user')
-    is_invalid_user : True si l'utilisateur n'existe pas sur le système
+    Classe le message sshd en fonction de son type d'événement.
     """
-    # --- Connexion réussie ---
-    m = _PATTERN_ACCEPTED.search(message)
-    if m:
+    # 1. Connexion réussie
+    m_ok = _ACCEPTED_RE.search(message)
+    if m_ok:
         return {
             "event_type": "accepted",
-            "ip": m.group("ip"),
-            "username": m.group("user"),
+            "ip": m_ok.group("ip"),
+            "username": m_ok.group("user"),
             "is_invalid_user": False,
         }
 
-    # --- Mot de passe échoué ---
-    m = _PATTERN_FAILED.search(message)
-    if m:
+    # 2. Échec de mot de passe
+    m_fail = _FAILED_RE.search(message)
+    if m_fail:
         return {
             "event_type": "failed",
-            "ip": m.group("ip"),
-            "username": m.group("user"),
-            "is_invalid_user": bool(m.group("invalid")),
+            "ip": m_fail.group("ip"),
+            "username": m_fail.group("user"),
+            "is_invalid_user": bool(m_fail.group("invalid")),
         }
 
-    # --- Utilisateur inconnu (sans tentative de mot de passe encore) ---
-    m = _PATTERN_INVALID.search(message)
-    if m:
+    # 3. Utilisateur inexistant
+    m_inv = _INVALID_RE.search(message)
+    if m_inv:
         return {
             "event_type": "invalid_user",
-            "ip": m.group("ip"),
-            "username": m.group("user") or "(vide)",
+            "ip": m_inv.group("ip"),
+            "username": m_inv.group("user") or "(vide)",
             "is_invalid_user": True,
         }
 
     return None
 
 
-def extract_from_row(row: str) -> dict | None:
+def extract_from_row(row: str) -> Optional[dict[str, Any]]:
     """
-    Parse une ligne brute du auth.log et retourne un dict structuré.
-
-    Paramètres
-    ----------
-    row : str
-        Ligne brute telle que lue depuis le fichier log.
-
-    Retour
-    ------
-    dict | None
-        Dictionnaire avec les clés :
-          month, day, time, host, service, event_type, ip, username,
-          is_invalid_user
-        Retourne None si la ligne ne correspond pas à un événement sshd pertinent.
-
-    Erreurs possibles loggées
-    -------------------------
-    - Ligne vide / None         → DEBUG
-    - Ligne non reconnue        → DEBUG
-    - Exception interne         → ERROR
+    Parse une ligne brute de log et retourne l'événement SSH structuré.
     """
     if not row or not row.strip():
         _log.debug("Ligne vide ignorée")
         return None
 
     try:
-        m = _PATTERN_LINE.match(row.strip())
-        if not m:
-            _log.debug("Ligne non reconnue (format inattendu) : %.80s", row.strip())
+        match = re.search(pattern, row.strip())
+        if not match:
+            _log.debug("Ligne non reconnue : %.80s", row.strip())
             return None
 
-        gd = m.groupdict()
+        gd = match.groupdict()
 
-        # On ne traite que sshd
+        # Filtrer uniquement les événements sshd
         if gd.get("service", "").lower() != "sshd":
             return None
 
-        event = _classify_message(gd["message"])
-        if event is None:
+        event_details = _classify_message(gd["message"])
+        if event_details is None:
             return None
 
         return {
             "month": gd["month"],
-            "day": gd["day"],
+            "day": int(gd["day"]),
             "time": gd["time"],
             "host": gd["host"],
             "service": gd["service"],
-            **event,
+            **event_details,
         }
 
     except Exception as exc:
-        _log.error("Erreur lors du parsing de la ligne : %s | Ligne : %.120s", exc, row.strip())
+        _log.error("Erreur parsing sur la ligne : %s | Ligne: %.100s", exc, row.strip())
         return None
 
 
-def extract_all(rows: list) -> list:
+def extract_all(rows: list[str]) -> list[dict[str, Any]]:
     """
-    Applique extract_from_row() sur chaque ligne et retourne
-    la liste des événements valides (None exclus).
-
-    Paramètres
-    ----------
-    rows : list[str]
-        Lignes brutes issues du module ingestion.
-
-    Retour
-    ------
-    list[dict]
-        Liste des événements SSH structurés.
-
-    Erreurs possibles loggées
-    -------------------------
-    - rows vide / None           → WARNING
-    - Taux de lignes non parsées → INFO
+    Extrait tous les événements SSH valides à partir de la liste de lignes brutes.
     """
     if not rows:
-        _log.warning("Liste de lignes vide reçue dans extract_all()")
+        _log.warning("Liste de lignes vide passée à extract_all()")
         return []
 
-    _log.info("Début du parsing : %d lignes à traiter", len(rows))
-
-    results = []
+    _log.info("Début du parsing de %d lignes…", len(rows))
+    events: list[dict[str, Any]] = []
     skipped = 0
+
     for row in rows:
-        event = extract_from_row(row)
-        if event:
-            results.append(event)
+        ev = extract_from_row(row)
+        if ev:
+            events.append(ev)
         else:
             skipped += 1
 
-    _log.info(
-        "Parsing terminé : %d événements extraits, %d lignes ignorées",
-        len(results), skipped
-    )
-    return results
+    _log.info("Parsing terminé : %d événements extraits, %d lignes ignorées", len(events), skipped)
+    return events
 
 
-# ---------------------------------------------------------------------------
-# Test rapide si exécuté directement
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    sample = [
-        "May 24 01:14:01 ns sshd[1351821]: Failed password for root from 45.148.10.147 port 8868 ssh2",
-        "May 24 01:13:16 ns sshd[1351812]: Invalid user elena from 94.232.41.236 port 46854",
-        "May 25 10:00:00 ns sshd[9999]: Accepted password for alice from 192.168.1.1 port 22 ssh2",
-    ]
-    for ev in extract_all(sample):
-        print(ev)
+    sample = "May 24 01:14:01 ns sshd[1351821]: Failed password for root from 45.148.10.147 port 8868 ssh2"
+    res = extract_from_row(sample)
+    print("Résultat extrait :", res)
