@@ -9,6 +9,7 @@ Rôle   : Parser les lignes brutes du auth.log Linux (service sshd).
          Retourne une liste de dictionnaires structurés.
 """
 import re
+from typing import Optional, Any
 
 from logger.app_logger import get_logger
 
