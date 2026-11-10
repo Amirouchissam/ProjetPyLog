@@ -15,6 +15,10 @@ logs/
 # Dashboard généré
 serving/dashboard.html
 serving/dashboard.png
+serving/chart*.png
+
+# Cache géolocalisation
+data/geo_cache.json
 
 # Data sensible
 data/

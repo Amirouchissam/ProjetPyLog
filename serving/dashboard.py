@@ -1,140 +1,259 @@
 """
 Module : serving/dashboard.py
-Rôle   : Générer un dashboard PNG avec 3 graphiques matplotlib
-         à partir des données PostgreSQL.
+Rôle   : Générer 3 graphiques PNG clairs depuis les données PostgreSQL.
 
-Graphiques produits dans serving/dashboard.png :
-  1. Tentatives échouées par pays        (bar chart horizontal)
-  2. Connexions réussies par utilisateur (bar chart vertical)
-  3. Tentatives avec utilisateur invalide (bar chart horizontal, top 15 users)
+Fichiers produits dans serving/ :
+  - chart1_failed_by_country.png   (bar chart horizontal)
+  - chart2_success_by_user.png     (bar chart vertical)
+  - chart3_invalid_users.png       (bar chart horizontal)
 """
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")          # Backend non-interactif (pas d'écran requis)
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 
 from logger.app_logger import get_logger
 
 _log = get_logger("serving.dashboard")
 
-OUTPUT_DIR  = Path(__file__).resolve().parent
-OUTPUT_FILE = OUTPUT_DIR / "dashboard.png"
+OUTPUT_DIR = Path(__file__).resolve().parent
+
+# Palette couleurs cohérente
+_COLOR_FAILED  = "#c0392b"   # rouge foncé
+_COLOR_SUCCESS = "#27ae60"   # vert
+_COLOR_INVALID = "#e67e22"   # orange
 
 
 # ---------------------------------------------------------------------------
-# Sous-graphiques
+# Utilitaire : sauvegarde propre d'une figure
 # ---------------------------------------------------------------------------
 
-def _plot_failed_by_country(ax, data: list) -> None:
+def _save(fig, filepath: Path, label: str) -> bool:
     """
-    Graphique 1 : tentatives échouées par pays.
+    Sauvegarde une figure matplotlib en PNG et ferme la figure.
 
     Paramètres
     ----------
-    ax   : matplotlib.axes.Axes
+    fig      : matplotlib.figure.Figure
+    filepath : Path — chemin de sortie
+    label    : str  — nom pour le log
+
+    Retour
+    ------
+    bool : True si succès
+
+    Erreurs possibles loggées
+    -------------------------
+    - Erreur écriture disque → ERROR
+    - Exception inattendue   → ERROR
+    """
+    try:
+        fig.savefig(filepath, dpi=130, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        _log.info("PNG sauvegardé : %s", filepath.name)
+        return True
+    except OSError as exc:
+        _log.error("Impossible d'écrire %s : %s", filepath.name, exc)
+        return False
+    except Exception as exc:
+        _log.error("Erreur inattendue sauvegarde %s : %s", filepath.name, exc)
+        return False
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Graphique 1 — Tentatives échouées par pays
+# ---------------------------------------------------------------------------
+
+def chart_failed_by_country(data: list) -> bool:
+    """
+    Bar chart horizontal : nombre de tentatives échouées par pays.
+
+    Paramètres
+    ----------
     data : list[tuple(country, nb_failed)]
 
-    Erreurs possibles loggées
-    -------------------------
-    - data vide → WARNING
-    """
-    if not data:
-        _log.warning("Graphique 1 : aucune donnée 'failed by country'")
-        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center",
-                transform=ax.transAxes, fontsize=12, color="grey")
-        ax.set_title("Tentatives échouées par pays", fontweight="bold")
-        return
-
-    top = data[:15]                         # top 15 pays
-    pays   = [str(r[0]) for r in top][::-1]
-    counts = [int(r[1]) for r in top][::-1]
-
-    bars = ax.barh(pays, counts, color="#e74c3c", edgecolor="white", linewidth=0.5)
-    ax.bar_label(bars, padding=4, fontsize=8, color="#2c3e50")
-    ax.set_xlabel("Nombre de tentatives", fontsize=9)
-    ax.set_title("① Tentatives échouées par pays (Top 15)", fontweight="bold", fontsize=11)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=9)
-    _log.info("Graphique 1 'failed_by_country' tracé (%d pays)", len(top))
-
-
-def _plot_success_by_user(ax, data: list) -> None:
-    """
-    Graphique 2 : connexions réussies par utilisateur.
-
-    Paramètres
-    ----------
-    ax   : matplotlib.axes.Axes
-    data : list[tuple(username, nb_success)]
+    Retour
+    ------
+    bool
 
     Erreurs possibles loggées
     -------------------------
-    - data vide → WARNING
+    - data vide             → WARNING
+    - Exception matplotlib  → ERROR
     """
     if not data:
-        _log.warning("Graphique 2 : aucune donnée 'success by user'")
-        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center",
-                transform=ax.transAxes, fontsize=12, color="grey")
-        ax.set_title("Connexions réussies par utilisateur", fontweight="bold")
-        return
+        _log.warning("chart1 : aucune donnée 'failed by country'")
+        return False
 
-    top = data[:12]
-    users  = [str(r[0]) for r in top]
-    counts = [int(r[1]) for r in top]
+    try:
+        top    = data[:20]
+        pays   = [str(r[0]) for r in top][::-1]
+        counts = [int(r[1]) for r in top][::-1]
 
-    bars = ax.bar(users, counts, color="#2ecc71", edgecolor="white", linewidth=0.5)
-    ax.bar_label(bars, padding=3, fontsize=8, color="#2c3e50")
-    ax.set_ylabel("Connexions réussies", fontsize=9)
-    ax.set_title("② Connexions réussies par utilisateur (Top 12)", fontweight="bold", fontsize=11)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(axis="x", rotation=30, labelsize=8)
-    ax.tick_params(axis="y", labelsize=9)
-    _log.info("Graphique 2 'success_by_user' tracé (%d users)", len(top))
+        height = max(5, len(pays) * 0.55)
+        fig, ax = plt.subplots(figsize=(12, height))
+        fig.patch.set_facecolor("#f9f9f9")
+        ax.set_facecolor("#ffffff")
 
+        bars = ax.barh(pays, counts, color=_COLOR_FAILED,
+                       edgecolor="#f9f9f9", linewidth=0.6, height=0.65)
 
-def _plot_invalid_users(ax, data: list) -> None:
-    """
-    Graphique 3 : tentatives échouées avec utilisateurs invalides.
+        # Étiquettes de valeur à droite de chaque barre
+        for bar, val in zip(bars, counts):
+            ax.text(bar.get_width() + max(counts) * 0.01, bar.get_y() + bar.get_height() / 2,
+                    f"{val:,}", va="center", ha="left", fontsize=9, color="#2c3e50")
 
-    Paramètres
-    ----------
-    ax   : matplotlib.axes.Axes
-    data : list[tuple(username, ip, country, nb_attempts)]
+        ax.set_xlabel("Nombre de tentatives échouées", fontsize=11, labelpad=10)
+        ax.set_title("Tentatives échouées par pays (Top 20)",
+                     fontsize=14, fontweight="bold", pad=15, color="#2c3e50")
+        ax.set_xlim(0, max(counts) * 1.15)
+        ax.spines[["top", "right", "left"]].set_visible(False)
+        ax.tick_params(left=False, labelsize=10)
+        ax.xaxis.grid(True, linestyle="--", alpha=0.5)
+        ax.set_axisbelow(True)
 
-    Erreurs possibles loggées
-    -------------------------
-    - data vide → WARNING
-    """
-    if not data:
-        _log.warning("Graphique 3 : aucune donnée 'invalid users'")
-        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center",
-                transform=ax.transAxes, fontsize=12, color="grey")
-        ax.set_title("Tentatives invalides par utilisateur", fontweight="bold")
-        return
+        fig.tight_layout(pad=1.5)
+        _log.info("chart1 : %d pays tracés", len(pays))
+        return _save(fig, OUTPUT_DIR / "chart1_failed_by_country.png", "chart1")
 
-    top = data[:15]
-    # Label : "user (pays)"
-    labels = [f"{str(r[0])} ({str(r[2])})" for r in top][::-1]
-    counts = [int(r[3]) for r in top][::-1]
-
-    bars = ax.barh(labels, counts, color="#e67e22", edgecolor="white", linewidth=0.5)
-    ax.bar_label(bars, padding=4, fontsize=8, color="#2c3e50")
-    ax.set_xlabel("Nombre de tentatives", fontsize=9)
-    ax.set_title("③ Tentatives avec utilisateur invalide (Top 15)", fontweight="bold", fontsize=11)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(labelsize=8)
-    _log.info("Graphique 3 'invalid_users' tracé (%d entrées)", len(top))
+    except Exception as exc:
+        _log.error("chart1 exception : %s", exc)
+        plt.close("all")
+        return False
 
 
 # ---------------------------------------------------------------------------
-# Génération du PNG
+# Graphique 2 — Connexions réussies par utilisateur
+# ---------------------------------------------------------------------------
+
+def chart_success_by_user(data: list) -> bool:
+    """
+    Bar chart vertical : connexions réussies par utilisateur.
+
+    Paramètres
+    ----------
+    data : list[tuple(username, nb_success)]
+
+    Retour
+    ------
+    bool
+
+    Erreurs possibles loggées
+    -------------------------
+    - data vide             → WARNING
+    - Exception matplotlib  → ERROR
+    """
+    if not data:
+        _log.warning("chart2 : aucune donnée 'success by user'")
+        return False
+
+    try:
+        top    = data[:15]
+        users  = [str(r[0]) for r in top]
+        counts = [int(r[1]) for r in top]
+
+        fig, ax = plt.subplots(figsize=(max(8, len(users) * 0.9), 6))
+        fig.patch.set_facecolor("#f9f9f9")
+        ax.set_facecolor("#ffffff")
+
+        bars = ax.bar(users, counts, color=_COLOR_SUCCESS,
+                      edgecolor="#f9f9f9", linewidth=0.6, width=0.6)
+
+        for bar, val in zip(bars, counts):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(counts) * 0.01,
+                    f"{val:,}", ha="center", va="bottom", fontsize=9, color="#2c3e50")
+
+        ax.set_ylabel("Nombre de connexions réussies", fontsize=11, labelpad=10)
+        ax.set_title("Connexions réussies par utilisateur (Top 15)",
+                     fontsize=14, fontweight="bold", pad=15, color="#2c3e50")
+        ax.set_ylim(0, max(counts) * 1.15)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.tick_params(axis="x", rotation=30, labelsize=10)
+        ax.tick_params(axis="y", labelsize=10)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.5)
+        ax.set_axisbelow(True)
+
+        fig.tight_layout(pad=1.5)
+        _log.info("chart2 : %d utilisateurs tracés", len(users))
+        return _save(fig, OUTPUT_DIR / "chart2_success_by_user.png", "chart2")
+
+    except Exception as exc:
+        _log.error("chart2 exception : %s", exc)
+        plt.close("all")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Graphique 3 — Tentatives avec utilisateur invalide
+# ---------------------------------------------------------------------------
+
+def chart_invalid_users(data: list) -> bool:
+    """
+    Bar chart horizontal : tentatives avec utilisateur invalide (top 20).
+
+    Paramètres
+    ----------
+    data : list[tuple(username, ip, country, nb_attempts)]
+
+    Retour
+    ------
+    bool
+
+    Erreurs possibles loggées
+    -------------------------
+    - data vide             → WARNING
+    - Exception matplotlib  → ERROR
+    """
+    if not data:
+        _log.warning("chart3 : aucune donnée 'invalid users'")
+        return False
+
+    try:
+        top    = data[:20]
+        labels = [f"{r[0]}  ({r[2]})" for r in top][::-1]
+        counts = [int(r[3]) for r in top][::-1]
+
+        height = max(5, len(labels) * 0.55)
+        fig, ax = plt.subplots(figsize=(12, height))
+        fig.patch.set_facecolor("#f9f9f9")
+        ax.set_facecolor("#ffffff")
+
+        bars = ax.barh(labels, counts, color=_COLOR_INVALID,
+                       edgecolor="#f9f9f9", linewidth=0.6, height=0.65)
+
+        for bar, val in zip(bars, counts):
+            ax.text(bar.get_width() + max(counts) * 0.01, bar.get_y() + bar.get_height() / 2,
+                    f"{val:,}", va="center", ha="left", fontsize=9, color="#2c3e50")
+
+        ax.set_xlabel("Nombre de tentatives", fontsize=11, labelpad=10)
+        ax.set_title("Tentatives avec utilisateur invalide (Top 20)",
+                     fontsize=14, fontweight="bold", pad=15, color="#2c3e50")
+        ax.set_xlim(0, max(counts) * 1.15)
+        ax.spines[["top", "right", "left"]].set_visible(False)
+        ax.tick_params(left=False, labelsize=10)
+        ax.xaxis.grid(True, linestyle="--", alpha=0.5)
+        ax.set_axisbelow(True)
+
+        fig.tight_layout(pad=1.5)
+        _log.info("chart3 : %d entrées tracées", len(labels))
+        return _save(fig, OUTPUT_DIR / "chart3_invalid_users.png", "chart3")
+
+    except Exception as exc:
+        _log.error("chart3 exception : %s", exc)
+        plt.close("all")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Point d'entrée principal
 # ---------------------------------------------------------------------------
 
 def generate(conn) -> bool:
     """
-    Génère le fichier dashboard.png (3 graphiques matplotlib).
+    Lance la génération des 3 graphiques PNG.
 
     Paramètres
     ----------
@@ -142,114 +261,56 @@ def generate(conn) -> bool:
 
     Retour
     ------
-    bool : True si l'image a été sauvegardée avec succès.
+    bool : True si au moins un graphique a été généré.
 
     Erreurs possibles loggées
     -------------------------
-    - conn None                  → ERROR
-    - Données vides pour un axe  → WARNING (géré dans chaque _plot_*)
-    - Erreur sauvegarde fichier  → ERROR
-    - Exception inattendue       → ERROR
+    - conn None                    → ERROR
+    - Erreur requête DB            → ERROR (géré dans db.py)
+    - Graphique individuel raté    → ERROR (les autres continuent)
     """
     if conn is None:
-        _log.error("generate() : connexion PostgreSQL None, dashboard non généré")
+        _log.error("generate() : connexion None, dashboard non généré")
         return False
 
-    _log.info("Début de la génération du dashboard PNG…")
+    _log.info("Génération des 3 graphiques PNG…")
 
-    # Import local pour éviter la circularité
     from storage.db import (
         query_failed_by_country,
         query_success_by_user,
         query_failed_invalid_users,
     )
 
-    # --- Récupération des données ---
     try:
         data_country = query_failed_by_country(conn)
         data_user    = query_success_by_user(conn)
         data_invalid = query_failed_invalid_users(conn)
     except Exception as exc:
-        _log.error("Erreur lors de la récupération des données : %s", exc)
+        _log.error("Erreur récupération données dashboard : %s", exc)
         return False
 
-    # --- KPI console ---
-    total_failed  = sum(r[1] for r in data_country)
-    total_success = sum(r[1] for r in data_user)
-    total_invalid = sum(r[3] for r in data_invalid)
+    # KPI log
     _log.info(
         "KPI → Échecs: %d | Succès: %d | Invalides: %d | Pays: %d",
-        total_failed, total_success, total_invalid, len(data_country)
+        sum(r[1] for r in data_country),
+        sum(r[1] for r in data_user),
+        sum(r[3] for r in data_invalid),
+        len(data_country),
     )
 
-    # --- Construction de la figure ---
-    try:
-        fig = plt.figure(figsize=(18, 14))
-        fig.suptitle(
-            "SSH Log Analysis Dashboard",
-            fontsize=16, fontweight="bold", y=0.98, color="#2c3e50"
-        )
+    ok1 = chart_failed_by_country(data_country)
+    ok2 = chart_success_by_user(data_user)
+    ok3 = chart_invalid_users(data_invalid)
 
-        # Sous-titre KPI
-        kpi_text = (
-            f"Échecs: {total_failed}   |   "
-            f"Succès: {total_success}   |   "
-            f"Utilisateurs invalides: {total_invalid}   |   "
-            f"Pays distincts: {len(data_country)}"
-        )
-        fig.text(0.5, 0.945, kpi_text, ha="center", fontsize=10,
-                 color="#7f8c8d", style="italic")
-
-        # Mise en page : graphique 1 en haut, 2 et 3 en bas
-        gs = gridspec.GridSpec(2, 2, figure=fig,
-                               hspace=0.45, wspace=0.35,
-                               top=0.92, bottom=0.07,
-                               left=0.08, right=0.97)
-
-        ax1 = fig.add_subplot(gs[0, :])   # Ligne 0, toute la largeur
-        ax2 = fig.add_subplot(gs[1, 0])   # Ligne 1, colonne gauche
-        ax3 = fig.add_subplot(gs[1, 1])   # Ligne 1, colonne droite
-
-        _plot_failed_by_country(ax1, data_country)
-        _plot_success_by_user(ax2, data_user)
-        _plot_invalid_users(ax3, data_invalid)
-
-        # Fond général
-        fig.patch.set_facecolor("#f8f9fa")
-        for ax in (ax1, ax2, ax3):
-            ax.set_facecolor("#ffffff")
-
-    except Exception as exc:
-        _log.error("Erreur lors de la construction des graphiques : %s", exc)
-        plt.close("all")
-        return False
-
-    # --- Sauvegarde PNG ---
-    try:
-        fig.savefig(OUTPUT_FILE, dpi=150, bbox_inches="tight",
-                    facecolor=fig.get_facecolor())
-        plt.close(fig)
-        _log.info("Dashboard PNG sauvegardé : %s", OUTPUT_FILE)
-        return True
-    except OSError as exc:
-        _log.error("Impossible d'écrire le dashboard PNG : %s", exc)
-        plt.close(fig)
-        return False
-    except Exception as exc:
-        _log.error("Erreur inattendue lors de la sauvegarde : %s", exc)
-        plt.close(fig)
-        return False
+    nb_ok = sum([ok1, ok2, ok3])
+    _log.info("%d/3 graphiques générés dans serving/", nb_ok)
+    return nb_ok > 0
 
 
-# ---------------------------------------------------------------------------
-# Test rapide si exécuté directement
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     from storage.db import get_connection
     conn = get_connection()
     if conn:
-        ok = generate(conn)
+        generate(conn)
         conn.close()
-        print(f"Dashboard PNG : {OUTPUT_FILE}" if ok else "Échec")
-    else:
-        print("Connexion PostgreSQL impossible.")
