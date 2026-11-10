@@ -14,7 +14,7 @@ from logger.app_logger import get_logger
 _log = get_logger("ingestion.raw")
 
 
-def to_rows(path: str) -> list:
+def to_rows(path: str) -> list[str]:
     """
     Lit tous les fichiers du répertoire 'path' et retourne leurs lignes.
 
@@ -30,12 +30,23 @@ def to_rows(path: str) -> list:
 
     Erreurs possibles loggées
     -------------------------
+    - Paramètre invalide         → ERROR
     - Répertoire introuvable     → ERROR
     - Fichier illisible          → ERROR  (on continue avec les suivants)
     - Aucune ligne lue           → WARNING
+    - Erreur inattendue          → CRITICAL
     """
-    data_dir = Path(path)
-    all_rows = []
+    all_rows: list[str] = []
+
+    if not path or not isinstance(path, (str, Path)):
+        _log.error("Chemin invalide fourni à to_rows : %r", path)
+        return all_rows
+
+    try:
+        data_dir = Path(path)
+    except Exception as exc:
+        _log.critical("Impossible de résoudre le chemin '%s' : %s", path, exc)
+        return all_rows
 
     # --- Vérification du répertoire ---
     if not data_dir.exists():
@@ -51,6 +62,9 @@ def to_rows(path: str) -> list:
         files = sorted(os.listdir(data_dir))
     except PermissionError as exc:
         _log.error("Permission refusée pour lister %s : %s", data_dir, exc)
+        return all_rows
+    except OSError as exc:
+        _log.error("Erreur système lors du listage de %s : %s", data_dir, exc)
         return all_rows
 
     if not files:
