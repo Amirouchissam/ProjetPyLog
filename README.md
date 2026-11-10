@@ -22,7 +22,7 @@ log_analysis/
 │
 ├── processing/
 │   ├── extract_transforme.py   # Parsing regex et classification des événements
-│   └── geo_location.py         # Géolocalisation des adresses IP (ipinfo.io)
+│   └── geo_location.py         # Résolution du pays via table locale (data/geoip.csv)
 │
 ├── storage/
 │   └── db.py                   # Connexion PostgreSQL, création de table et requêtes
@@ -40,7 +40,7 @@ log_analysis/
 
 ## 2. Dépendances et environnement
 
-Le projet utilise uniquement les modules standards Python vus en cours (`logging`, `re`, `urllib`, `gzip`, `json`, `socket`, `pathlib`, `typing`, `argparse`), complétés par deux bibliothèques tierces nécessaires au stockage et au tracé :
+Le projet utilise exclusivement les modules standards Python vus en cours (`logging`, `re`, `typing`, `os`, `sys`, `gzip`), complétés par les deux bibliothèques nécessaires au stockage et au tracé :
 
 | Bibliothèque | Rôle |
 |---|---|
