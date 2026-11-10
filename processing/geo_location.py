@@ -1,211 +1,158 @@
 """
 Module : processing/geo_location.py
-Rôle   : Résoudre la géolocalisation d'une adresse IP via l'API ipinfo.io.
-         Retourne un dictionnaire avec le pays, la ville et les coordonnées.
-
-Optimisations :
-  - Cache mémoire par IP (évite les doublons)
-  - Déduplication : n appels réseau max = nombre d'IPs uniques
-  - Timeout global via socket.setdefaulttimeout()
-  - Interruption propre sur KeyboardInterrupt
+Rôle   : Résoudre le pays d'origine d'une adresse IP à partir d'un fichier CSV local (data/geoip.csv).
+         Conforme au cours : utilise uniquement 'open' et 're' (aucun package externe ni requête HTTP).
 """
-import json
-import socket
-import urllib.request
-import urllib.error
-from typing import Optional, Any
+import os
+import re
+import sys
+from typing import Optional
+
+# Assurer l'accès aux modules parents lors d'une exécution directe
+if "." not in sys.path:
+    sys.path.insert(0, ".")
 
 from logger.app_logger import get_logger
 
 _log = get_logger("processing.geo_location")
 
-# URL de l'API publique (pas de token requis pour usage limité)
-_IPINFO_URL = "https://ipinfo.io/{ip}/json"
+# Fichier GeoIP local
+GEOIP_FILE: str = os.path.join("data", "geoip.csv")
 
-# Timeout réseau global en secondes (SSL handshake compris)
-_TIMEOUT = 4
+# Regex pour valider un CIDR : ex. 192.168.0.0/16
+_CIDR_PATTERN = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})$")
 
-# Cache mémoire : { ip -> dict }
-_cache: dict = {}
+# Cache mémoire pour éviter de recalculer la même IP
+_cache: dict[str, str] = {}
 
-# IPs privées / locales à ne pas géolocaliser
-_PRIVATE_PREFIXES = (
-    "127.", "10.", "192.168.",
-    "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
-    "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
-    "::1",
-)
+# Table locale chargée en mémoire : [(prefix_parts, mask, country), ...]
+_geo_table: list[tuple[list[int], int, str]] = []
 
 
-def _is_private(ip: str) -> bool:
-    """Retourne True si l'IP est privée/locale."""
-    return any(ip.startswith(prefix) for prefix in _PRIVATE_PREFIXES)
+def _ip_to_int(ip_str: str) -> Optional[int]:
+    """Convertit une chaîne IPv4 en entier 32 bits."""
+    parts = ip_str.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        nums = [int(p) for p in parts]
+        if any(n < 0 or n > 255 for n in nums):
+            return None
+        return (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3]
+    except ValueError:
+        return None
 
 
-def get_location(ip: str) -> dict:
+def load_geoip_table(filepath: str = GEOIP_FILE) -> int:
     """
-    Retourne les informations de géolocalisation pour une IP donnée.
-
-    Paramètres
-    ----------
-    ip : str
-        Adresse IPv4 à géolocaliser.
-
-    Retour
-    ------
-    dict
-        Clés garanties : 'ip', 'country', 'city', 'org'.
-        Valeurs 'Unknown' si la géolocalisation a échoué.
-
-    Erreurs possibles loggées
-    -------------------------
-    - IP privée / locale         → DEBUG  (retourne 'Local')
-    - Réponse HTTP non 200       → WARNING
-    - Erreur réseau / timeout    → ERROR
-    - Réponse JSON invalide      → ERROR
-    - Exception inattendue       → ERROR
+    Charge la table GeoIP depuis un fichier CSV (format: cidr,pays).
+    Utilise open() et re.compile() selon les notions du cours.
     """
-    _default = {"ip": ip, "country": "Unknown", "city": "Unknown", "org": "Unknown"}
+    global _geo_table
+    _geo_table = []
 
+    if not os.path.exists(filepath):
+        _log.warning("Fichier GeoIP introuvable : %s (pays par défaut : 'Unknown')", filepath)
+        return 0
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as fh:
+            for line_no, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+
+                cidr_str = parts[0].strip()
+                country = parts[1].strip()
+
+                m = _CIDR_PATTERN.match(cidr_str)
+                if not m:
+                    _log.debug("Ligne %d ignorée (format CIDR invalide) : %s", line_no, line)
+                    continue
+
+                octets = [int(g) for g in m.groups()[:4]]
+                mask_len = int(m.group(5))
+
+                if any(o > 255 for o in octets) or mask_len > 32 or mask_len < 0:
+                    continue
+
+                _geo_table.append((octets, mask_len, country))
+
+        _log.info("GeoIP : %d règles chargées depuis %s", len(_geo_table), filepath)
+        return len(_geo_table)
+
+    except OSError as exc:
+        _log.error("Erreur lecture fichier GeoIP '%s' : %s", filepath, exc)
+        return 0
+
+
+def get_country(ip: str) -> str:
+    """
+    Retourne le pays associé à une adresse IP par correspondance avec la table GeoIP.
+    """
     if not ip or not isinstance(ip, str):
-        _log.error("IP invalide reçue : %r", ip)
-        return _default
+        return "Unknown"
 
-    # --- IPs privées ---
-    if _is_private(ip):
-        _log.debug("IP locale ignorée : %s", ip)
-        return {"ip": ip, "country": "Local", "city": "Local", "org": "Local"}
-
-    # --- Cache ---
     if ip in _cache:
-        _log.debug("Cache hit pour %s", ip)
         return _cache[ip]
 
-    # --- Requête HTTP (stdlib urllib) ---
-    # socket.setdefaulttimeout garantit le respect du timeout même pendant
-    # le SSL handshake (urllib timeout=x seul ne suffit pas sur Windows/py3.14)
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(_TIMEOUT)
+    ip_int = _ip_to_int(ip)
+    if ip_int is None:
+        _cache[ip] = "Unknown"
+        return "Unknown"
 
-    url = _IPINFO_URL.format(ip=ip)
-    try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req) as response:
-            if response.status != 200:
-                _log.warning("ipinfo.io a répondu %d pour %s", response.status, ip)
-                return _default
+    # Recherche de la règle la plus précise (masque le plus grand)
+    best_match_country = "Unknown"
+    best_mask = -1
 
-            raw = response.read().decode("utf-8")
-            data = json.loads(raw)
+    for octets, mask_len, country in _geo_table:
+        net_int = (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]
+        mask_val = ((1 << 32) - 1) ^ ((1 << (32 - mask_len)) - 1) if mask_len > 0 else 0
 
-    except urllib.error.HTTPError as exc:
-        _log.error("Erreur HTTP pour %s : %s", ip, exc)
-        return _default
-    except urllib.error.URLError as exc:
-        _log.error("Erreur réseau pour %s : %s", ip, exc)
-        return _default
-    except json.JSONDecodeError as exc:
-        _log.error("JSON invalide pour %s : %s", ip, exc)
-        return _default
-    except (TimeoutError, socket.timeout, OSError) as exc:
-        _log.error("Timeout/socket pour %s : %s", ip, exc)
-        return _default
-    except Exception as exc:
-        _log.error("Erreur inattendue pour %s : %s", ip, exc)
-        return _default
-    finally:
-        # Restaurer le timeout système d'origine
-        socket.setdefaulttimeout(old_timeout)
+        if (ip_int & mask_val) == (net_int & mask_val):
+            if mask_len > best_mask:
+                best_mask = mask_len
+                best_match_country = country
 
-    result = {
-        "ip":      data.get("ip", ip),
-        "country": data.get("country", "Unknown"),
-        "city":    data.get("city", "Unknown"),
-        "org":     data.get("org", "Unknown"),
-    }
-
-    _cache[ip] = result
-    _log.debug("Géolocalisation réussie pour %s → %s / %s", ip, result["country"], result["city"])
-    return result
+    _cache[ip] = best_match_country
+    return best_match_country
 
 
-def enrich_events(events: list) -> list:
+def enrich_events(events: list[dict]) -> list[dict]:
     """
-    Ajoute les informations de géolocalisation à chaque événement.
-
-    Optimisation : on résout d'abord les IPs **uniques**, puis on propage
-    le résultat à tous les événements qui partagent la même IP.
-    Cela évite des milliers de requêtes HTTP redondantes.
-
-    Paramètres
-    ----------
-    events : list[dict]
-        Liste d'événements avec clé 'ip'.
-
-    Retour
-    ------
-    list[dict]
-        Mêmes événements enrichis des clés 'country', 'city', 'org'.
-
-    Erreurs possibles loggées
-    -------------------------
-    - events vide / None           → WARNING
-    - Événement sans clé 'ip'      → WARNING (ignoré)
-    - KeyboardInterrupt utilisateur → WARNING (arrêt propre, retourne partiel)
+    Enrichit chaque événement de la liste avec son pays d'origine.
     """
     if not events:
-        _log.warning("Liste d'événements vide reçue dans enrich_events()")
+        _log.warning("enrich_events appelé avec une liste vide")
         return []
 
-    # --- Déduplication des IPs ---
-    unique_ips = {ev.get("ip") for ev in events if ev.get("ip")}
-    unique_ips.discard(None)
-    _log.info(
-        "Géolocalisation : %d événements → %d IPs uniques à résoudre",
-        len(events), len(unique_ips)
-    )
+    # S'assurer que la table est chargée
+    if not _geo_table:
+        load_geoip_table(GEOIP_FILE)
 
-    # --- Résolution IP par IP avec gestion d'interruption ---
-    geo_map: dict = {}
-    done = 0
-    try:
-        for ip in unique_ips:
-            geo_map[ip] = get_location(ip)
-            done += 1
-            if done % 50 == 0:
-                _log.info("  → %d / %d IPs résolues…", done, len(unique_ips))
-    except KeyboardInterrupt:
-        _log.warning(
-            "Géolocalisation interrompue par l'utilisateur après %d / %d IPs. "
-            "Les IPs non résolues recevront 'Unknown'.",
-            done, len(unique_ips)
-        )
-
-    # --- Enrichissement de tous les événements ---
-    enriched = []
-    errors = 0
+    enriched: list[dict] = []
     for ev in events:
-        ip = ev.get("ip")
-        if not ip:
-            _log.warning("Événement sans clé 'ip' ignoré : %s", ev)
-            errors += 1
-            continue
+        ip = ev.get("ip", "")
+        country = get_country(ip)
+        enriched.append({
+            **ev,
+            "country": country,
+            "city": country,
+            "org": country,
+        })
 
-        location = geo_map.get(ip, {"ip": ip, "country": "Unknown", "city": "Unknown", "org": "Unknown"})
-        enriched.append({**ev, **location})
-
-    _log.info(
-        "Géolocalisation terminée : %d enrichis, %d erreurs",
-        len(enriched), errors
-    )
+    _log.info("Géolocalisation locale terminée pour %d événements", len(enriched))
     return enriched
 
 
-# ---------------------------------------------------------------------------
-# Test rapide si exécuté directement
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    test_ips = ["45.148.10.152", "94.232.41.236", "127.0.0.1"]
-    for ip in test_ips:
-        print(get_location(ip))
+    import sys
+    sys.path.insert(0, ".")
+    load_geoip_table()
+    test_ips = ["45.148.10.141", "94.232.41.236", "192.168.1.1", "127.0.0.1"]
+    for test_ip in test_ips:
+        print(f"{test_ip} -> {get_country(test_ip)}")

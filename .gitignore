@@ -17,6 +17,7 @@ serving/dashboard.html
 
 # Data sensible
 data/
+!data/geoip.csv
 
 # IDE
 .vscode/
