@@ -6,7 +6,7 @@ Enchaîne les étapes dans l'ordre :
   2. Processing  : parsing des événements SSH
   3. Géolocation : enrichissement des IP
   4. Storage     : insertion dans PostgreSQL (port 4001)
-  5. Serving     : génération du dashboard HTML
+  5. Serving     : génération du dashboard PNG (serving/dashboard.png)
 
 Usage :
   python main.py [--data-dir ./data]
@@ -147,14 +147,14 @@ def run_pipeline(data_dir: str, skip_geo: bool = False, skip_db: bool = False) -
     # ------------------------------------------------------------------ #
     # ÉTAPE 5 — Dashboard                                                 #
     # ------------------------------------------------------------------ #
-    _log.info("[5/5] Génération du dashboard HTML…")
+    _log.info("[5/5] Génération du dashboard PNG…")
     if skip_db or conn is None:
         _log.warning("[5/5] ⚠ Dashboard ignoré (pas de connexion DB)")
     else:
         try:
             ok = dashboard.generate(conn)
             if ok:
-                _log.info("[5/5] ✓ Dashboard généré : serving/dashboard.html")
+                _log.info("[5/5] ✓ Dashboard généré : serving/dashboard.png")
             else:
                 _log.warning("[5/5] ⚠ Dashboard non généré (voir les logs)")
         except Exception as exc:
