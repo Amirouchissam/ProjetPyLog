@@ -8,9 +8,13 @@ Tables créées automatiquement :
 
 Dépendance : psycopg2-binary
 """
-import psycopg2
-from psycopg2 import sql, OperationalError, DatabaseError, InterfaceError
+import sys
+from typing import Optional, Any
 
+if "." not in sys.path:
+    sys.path.insert(0, ".")
+
+import psycopg2
 from logger.app_logger import get_logger
 
 _log = get_logger("storage.db")
@@ -19,15 +23,11 @@ _log = get_logger("storage.db")
 # Configuration de la connexion
 # ---------------------------------------------------------------------------
 DB_CONFIG = {
-    "host":     "localhost",
+    "host":     "127.0.0.1",
     "port":     4001,
     "dbname":   "log_analysis",
     "user":     "postgres",
     "password": "issamam1010",
-    # Note: client_encoding intentionally omitted — let psycopg2 negotiate with the
-    # server automatically. Forcing 'utf8' on a Windows/French PostgreSQL instance
-    # causes UnicodeDecodeError when the server returns accented error messages
-    # (e.g. Latin-1 0xe9 'é') before the encoding handshake completes.
 }
 
 # SQL de création de la table principale
@@ -74,7 +74,7 @@ def get_connection():
             DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"]
         )
         return conn
-    except OperationalError as exc:
+    except psycopg2.OperationalError as exc:
         _log.error(
             "Impossible de se connecter à PostgreSQL (%s:%d / %s) : %s",
             DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"], exc
@@ -119,7 +119,7 @@ def init_schema(conn) -> bool:
         conn.commit()
         _log.info("Table ssh_events vérifiée / créée avec succès")
         return True
-    except DatabaseError as exc:
+    except Exception as exc:
         _log.error("Erreur lors de la création du schéma : %s", exc)
         conn.rollback()
         return False
@@ -192,7 +192,7 @@ def insert_events(conn, events: list) -> int:
                 try:
                     cur.execute(_INSERT_SQL, row)
                     inserted += 1
-                except DatabaseError as exc:
+                except Exception as exc:
                     _log.error("Erreur insertion événement %s : %s", ev.get("ip"), exc)
                     conn.rollback()
                     skipped += 1
@@ -200,7 +200,7 @@ def insert_events(conn, events: list) -> int:
         conn.commit()
         _log.info("Insertion terminée : %d insérés, %d ignorés", inserted, skipped)
 
-    except (DatabaseError, InterfaceError) as exc:
+    except Exception as exc:
         _log.error("Erreur lors du lot d'insertions : %s", exc)
         conn.rollback()
 
@@ -244,7 +244,7 @@ def query_failed_by_country(conn) -> list:
             rows = cur.fetchall()
             _log.info("Requête failed_by_country : %d pays", len(rows))
             return rows
-    except DatabaseError as exc:
+    except Exception as exc:
         _log.error("query_failed_by_country() erreur SQL : %s", exc)
         return []
 
@@ -281,7 +281,7 @@ def query_success_by_user(conn) -> list:
             rows = cur.fetchall()
             _log.info("Requête success_by_user : %d utilisateurs", len(rows))
             return rows
-    except DatabaseError as exc:
+    except Exception as exc:
         _log.error("query_success_by_user() erreur SQL : %s", exc)
         return []
 
@@ -320,7 +320,7 @@ def query_failed_invalid_users(conn) -> list:
             rows = cur.fetchall()
             _log.info("Requête failed_invalid_users : %d entrées", len(rows))
             return rows
-    except DatabaseError as exc:
+    except Exception as exc:
         _log.error("query_failed_invalid_users() erreur SQL : %s", exc)
         return []
 
@@ -360,7 +360,7 @@ def query_top_invalid_users(conn, limit: int = 10) -> list:
             rows = cur.fetchall()
             _log.info("Requête top_invalid_users : %d utilisateurs", len(rows))
             return rows
-    except DatabaseError as exc:
+    except Exception as exc:
         _log.error("query_top_invalid_users() erreur SQL : %s", exc)
         return []
 
