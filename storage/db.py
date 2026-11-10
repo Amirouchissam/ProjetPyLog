@@ -1,22 +1,24 @@
 """
 Module : storage/db.py
-Rôle   : Gérer la connexion à PostgreSQL (port 4001) et les opérations CRUD
-         pour les événements SSH analysés.
+Rôle   : Gérer la connexion à PostgreSQL (port 4001), le schéma de base de données
+         et les requêtes analytiques pour le dashboard.
 
-Tables créées automatiquement :
-  - ssh_events : stocke chaque événement SSH parsé et géolocalisé.
-
-Dépendance : psycopg2-binary
+Fonctionnalités :
+  - Création automatique de la table ssh_events si absente.
+  - Insertion par lot ultra-rapide via execute_batch (psycopg2.extras).
+  - Troncature sécurisée de la table pour réinitialisation idempotente.
+  - Requêtes agrégées pour les KPIs, pays, utilisateurs, et chronologie.
 """
 import psycopg2
-from psycopg2 import sql, OperationalError, DatabaseError, InterfaceError
+from psycopg2 import DatabaseError, InterfaceError, OperationalError
+from psycopg2.extras import execute_batch
 
 from logger.app_logger import get_logger
 
 _log = get_logger("storage.db")
 
 # ---------------------------------------------------------------------------
-# Configuration de la connexion
+# Paramètres de connexion PostgreSQL (port 4001 requis)
 # ---------------------------------------------------------------------------
 DB_CONFIG = {
     "host":            "localhost",
@@ -24,10 +26,10 @@ DB_CONFIG = {
     "dbname":          "log_analysis",
     "user":            "postgres",
     "password":        "123",
-    "client_encoding": "utf8",   # force UTF-8 pour éviter UnicodeDecodeError (Windows/fr)
+    "client_encoding": "utf8",
 }
 
-# SQL de création de la table principale
+# Définition DDL de la table principale
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS ssh_events (
     id              SERIAL PRIMARY KEY,
@@ -36,7 +38,7 @@ CREATE TABLE IF NOT EXISTS ssh_events (
     time            VARCHAR(8)   NOT NULL,
     host            VARCHAR(255) NOT NULL,
     service         VARCHAR(50)  NOT NULL,
-    event_type      VARCHAR(20)  NOT NULL,   -- 'failed', 'accepted', 'invalid_user'
+    event_type      VARCHAR(20)  NOT NULL,
     ip              VARCHAR(45)  NOT NULL,
     username        VARCHAR(100) NOT NULL,
     is_invalid_user BOOLEAN      NOT NULL DEFAULT FALSE,
@@ -45,183 +47,181 @@ CREATE TABLE IF NOT EXISTS ssh_events (
     org             VARCHAR(255) DEFAULT 'Unknown',
     inserted_at     TIMESTAMP    DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_ssh_events_country ON ssh_events(country);
+CREATE INDEX IF NOT EXISTS idx_ssh_events_type ON ssh_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_ssh_events_user ON ssh_events(username);
+"""
+
+_INSERT_SQL = """
+INSERT INTO ssh_events
+    (month, day, time, host, service, event_type,
+     ip, username, is_invalid_user, country, city, org)
+VALUES
+    (%(month)s, %(day)s, %(time)s, %(host)s, %(service)s, %(event_type)s,
+     %(ip)s, %(username)s, %(is_invalid_user)s, %(country)s, %(city)s, %(org)s);
 """
 
 
 # ---------------------------------------------------------------------------
-# Connexion
+# Connexion et initialisation du schéma
 # ---------------------------------------------------------------------------
 
 def get_connection():
     """
-    Ouvre et retourne une connexion psycopg2 à PostgreSQL.
+    Établit et retourne une connexion active à PostgreSQL.
 
     Retour
     ------
-    psycopg2.connection | None
-
-    Erreurs possibles loggées
-    -------------------------
-    - Impossible de se connecter    → ERROR
+    psycopg2.extensions.connection | None
     """
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         _log.info(
-            "Connexion PostgreSQL établie (host=%s port=%d dbname=%s)",
+            "Connexion PostgreSQL établie avec succès (%s:%d/%s).",
             DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"]
         )
         return conn
     except OperationalError as exc:
         _log.error(
-            "Impossible de se connecter à PostgreSQL (%s:%d / %s) : %s",
+            "Échec de connexion PostgreSQL sur %s:%d (base '%s') : %s",
             DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"], exc
         )
         return None
+    except Exception as exc:
+        _log.error("Erreur inattendue à la connexion PostgreSQL : %s", exc)
+        return None
 
-
-# ---------------------------------------------------------------------------
-# Initialisation du schéma
-# ---------------------------------------------------------------------------
 
 def init_schema(conn) -> bool:
     """
-    Crée la table ssh_events si elle n'existe pas encore.
+    Initialise la table ssh_events et ses index s'ils n'existent pas.
 
     Paramètres
     ----------
-    conn : psycopg2.connection
+    conn : psycopg2 connection
 
     Retour
     ------
-    bool : True si succès, False si erreur.
-
-    Erreurs possibles loggées
-    -------------------------
-    - Connexion None             → ERROR
-    - Erreur SQL                 → ERROR
+    bool : True si initialisé avec succès.
     """
     if conn is None:
-        _log.error("init_schema() appelé avec une connexion None")
+        _log.error("init_schema() appelé avec une connexion None.")
         return False
 
     try:
         with conn.cursor() as cur:
             cur.execute(_CREATE_TABLE_SQL)
         conn.commit()
-        _log.info("Table ssh_events vérifiée / créée avec succès")
+        _log.info("Schéma de base de données validé (table ssh_events prête).")
         return True
     except DatabaseError as exc:
-        _log.error("Erreur lors de la création du schéma : %s", exc)
+        _log.error("Erreur SQL lors de l'initialisation du schéma : %s", exc)
+        conn.rollback()
+        return False
+
+
+def truncate_events(conn) -> bool:
+    """
+    Vide intégralement la table ssh_events et réinitialise l'identifiant.
+
+    Paramètres
+    ----------
+    conn : psycopg2 connection
+
+    Retour
+    ------
+    bool : True si succès.
+    """
+    if conn is None:
+        _log.error("truncate_events() : connexion None.")
+        return False
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE ssh_events RESTART IDENTITY;")
+        conn.commit()
+        _log.info("Table ssh_events vidée avec succès (TRUNCATE).")
+        return True
+    except DatabaseError as exc:
+        _log.error("Erreur lors de la troncature de la table : %s", exc)
         conn.rollback()
         return False
 
 
 # ---------------------------------------------------------------------------
-# Insertion
+# Insertion par lot (Batch Insert)
 # ---------------------------------------------------------------------------
 
 def insert_events(conn, events: list) -> int:
     """
-    Insère une liste d'événements dans la table ssh_events.
+    Insère une liste d'événements dans PostgreSQL en utilisant execute_batch.
 
     Paramètres
     ----------
-    conn   : psycopg2.connection
-    events : list[dict]  — clés attendues : toutes celles du schéma.
+    conn : psycopg2 connection
+    events : list[dict]
 
     Retour
     ------
-    int : nombre de lignes effectivement insérées.
-
-    Erreurs possibles loggées
-    -------------------------
-    - Connexion None                 → ERROR
-    - Liste vide                     → WARNING
-    - Erreur d'insertion par lot     → ERROR  (rollback)
-    - Clé manquante dans un événement→ WARNING (événement ignoré)
+    int : nombre de lignes insérées.
     """
     if conn is None:
-        _log.error("insert_events() appelé avec une connexion None")
+        _log.error("insert_events() : connexion None.")
         return 0
 
     if not events:
-        _log.warning("insert_events() : liste d'événements vide")
+        _log.warning("insert_events() : aucun événement à insérer.")
         return 0
 
-    _INSERT_SQL = """
-        INSERT INTO ssh_events
-            (month, day, time, host, service, event_type,
-             ip, username, is_invalid_user, country, city, org)
-        VALUES
-            (%(month)s, %(day)s, %(time)s, %(host)s, %(service)s, %(event_type)s,
-             %(ip)s, %(username)s, %(is_invalid_user)s, %(country)s, %(city)s, %(org)s)
-    """
+    rows_to_insert = []
+    required_keys = {"month", "day", "time", "host", "service", "event_type", "ip", "username"}
 
-    inserted = 0
-    skipped = 0
+    for ev in events:
+        if not required_keys.issubset(ev.keys()):
+            continue
+
+        rows_to_insert.append({
+            "month":           str(ev["month"]),
+            "day":             int(ev["day"]),
+            "time":            str(ev["time"]),
+            "host":            str(ev["host"]),
+            "service":         str(ev["service"]),
+            "event_type":      str(ev["event_type"]),
+            "ip":              str(ev["ip"]),
+            "username":        str(ev["username"]),
+            "is_invalid_user": bool(ev.get("is_invalid_user", False)),
+            "country":         str(ev.get("country", "Unknown") or "Unknown"),
+            "city":            str(ev.get("city", "Unknown") or "Unknown"),
+            "org":             str(ev.get("org", "Unknown") or "Unknown"),
+        })
+
+    if not rows_to_insert:
+        _log.warning("Aucun événement valide à insérer.")
+        return 0
 
     try:
         with conn.cursor() as cur:
-            for ev in events:
-                # Vérification des clés obligatoires
-                required = {"month", "day", "time", "host", "service",
-                            "event_type", "ip", "username", "is_invalid_user"}
-                missing = required - ev.keys()
-                if missing:
-                    _log.warning("Événement ignoré (clés manquantes: %s) : %s", missing, ev)
-                    skipped += 1
-                    continue
-
-                # Valeurs par défaut pour les champs géo
-                row = {
-                    **ev,
-                    "country": ev.get("country", "Unknown"),
-                    "city":    ev.get("city", "Unknown"),
-                    "org":     ev.get("org", "Unknown"),
-                }
-
-                try:
-                    cur.execute(_INSERT_SQL, row)
-                    inserted += 1
-                except DatabaseError as exc:
-                    _log.error("Erreur insertion événement %s : %s", ev.get("ip"), exc)
-                    conn.rollback()
-                    skipped += 1
-
+            execute_batch(cur, _INSERT_SQL, rows_to_insert, page_size=2000)
         conn.commit()
-        _log.info("Insertion terminée : %d insérés, %d ignorés", inserted, skipped)
+        _log.info("Insertion par lot réussie : %d événements insérés.", len(rows_to_insert))
+        return len(rows_to_insert)
 
     except (DatabaseError, InterfaceError) as exc:
-        _log.error("Erreur lors du lot d'insertions : %s", exc)
+        _log.error("Erreur lors de l'insertion par lot dans PostgreSQL : %s", exc)
         conn.rollback()
-
-    return inserted
+        return 0
 
 
 # ---------------------------------------------------------------------------
-# Requêtes pour le dashboard
+# Requêtes analytiques pour le dashboard
 # ---------------------------------------------------------------------------
 
 def query_failed_by_country(conn) -> list:
     """
     Retourne le nombre de tentatives échouées par pays.
-
-    SELECT country, COUNT(*) as nb_failed
-    FROM ssh_events
-    WHERE event_type IN ('failed', 'invalid_user')
-    GROUP BY country ORDER BY nb_failed DESC
-
-    Retour
-    ------
-    list[tuple(country, nb_failed)]
-
-    Erreurs possibles loggées
-    -------------------------
-    - Connexion None   → ERROR
-    - Erreur SQL       → ERROR
+    SELECT country, COUNT(*) as nb_failed ...
     """
     if conn is None:
-        _log.error("query_failed_by_country() : connexion None")
         return []
     try:
         with conn.cursor() as cur:
@@ -230,11 +230,9 @@ def query_failed_by_country(conn) -> list:
                 FROM ssh_events
                 WHERE event_type IN ('failed', 'invalid_user')
                 GROUP BY country
-                ORDER BY nb_failed DESC
+                ORDER BY nb_failed DESC;
             """)
-            rows = cur.fetchall()
-            _log.info("Requête failed_by_country : %d pays", len(rows))
-            return rows
+            return cur.fetchall()
     except DatabaseError as exc:
         _log.error("query_failed_by_country() erreur SQL : %s", exc)
         return []
@@ -243,22 +241,9 @@ def query_failed_by_country(conn) -> list:
 def query_success_by_user(conn) -> list:
     """
     Retourne le nombre de connexions réussies par utilisateur.
-
-    SELECT username, COUNT(*) as nb_success
-    FROM ssh_events WHERE event_type = 'accepted'
-    GROUP BY username ORDER BY nb_success DESC
-
-    Retour
-    ------
-    list[tuple(username, nb_success)]
-
-    Erreurs possibles loggées
-    -------------------------
-    - Connexion None   → ERROR
-    - Erreur SQL       → ERROR
+    SELECT username, COUNT(*) as nb_success ...
     """
     if conn is None:
-        _log.error("query_success_by_user() : connexion None")
         return []
     try:
         with conn.cursor() as cur:
@@ -267,11 +252,9 @@ def query_success_by_user(conn) -> list:
                 FROM ssh_events
                 WHERE event_type = 'accepted'
                 GROUP BY username
-                ORDER BY nb_success DESC
+                ORDER BY nb_success DESC;
             """)
-            rows = cur.fetchall()
-            _log.info("Requête success_by_user : %d utilisateurs", len(rows))
-            return rows
+            return cur.fetchall()
     except DatabaseError as exc:
         _log.error("query_success_by_user() erreur SQL : %s", exc)
         return []
@@ -279,24 +262,10 @@ def query_success_by_user(conn) -> list:
 
 def query_failed_invalid_users(conn) -> list:
     """
-    Retourne les tentatives échouées avec des utilisateurs invalides.
-
-    SELECT username, ip, country, COUNT(*) as nb_attempts
-    FROM ssh_events
-    WHERE is_invalid_user = TRUE
-    GROUP BY username, ip, country ORDER BY nb_attempts DESC
-
-    Retour
-    ------
-    list[tuple(username, ip, country, nb_attempts)]
-
-    Erreurs possibles loggées
-    -------------------------
-    - Connexion None   → ERROR
-    - Erreur SQL       → ERROR
+    Retourne les tentatives échouées avec utilisateurs invalides.
+    SELECT username, ip, country, COUNT(*) as nb_attempts ...
     """
     if conn is None:
-        _log.error("query_failed_invalid_users() : connexion None")
         return []
     try:
         with conn.cursor() as cur:
@@ -306,22 +275,60 @@ def query_failed_invalid_users(conn) -> list:
                 WHERE is_invalid_user = TRUE
                 GROUP BY username, ip, country
                 ORDER BY nb_attempts DESC
-                LIMIT 50
+                LIMIT 50;
             """)
-            rows = cur.fetchall()
-            _log.info("Requête failed_invalid_users : %d entrées", len(rows))
-            return rows
+            return cur.fetchall()
     except DatabaseError as exc:
         _log.error("query_failed_invalid_users() erreur SQL : %s", exc)
         return []
 
 
+def query_hourly_activity(conn) -> list:
+    """
+    Retourne la distribution horaire des événements SSH (00h - 23h).
+    """
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT SUBSTRING(time FROM 1 FOR 2) AS hour, COUNT(*) AS count
+                FROM ssh_events
+                GROUP BY hour
+                ORDER BY hour;
+            """)
+            return cur.fetchall()
+    except DatabaseError as exc:
+        _log.error("query_hourly_activity() erreur SQL : %s", exc)
+        return []
+
+
+def query_event_types_distribution(conn) -> list:
+    """
+    Retourne la ventilation globale des événements (failed, invalid_user, accepted).
+    """
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT event_type, COUNT(*) AS count
+                FROM ssh_events
+                GROUP BY event_type
+                ORDER BY count DESC;
+            """)
+            return cur.fetchall()
+    except DatabaseError as exc:
+        _log.error("query_event_types_distribution() erreur SQL : %s", exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
-# Test rapide si exécuté directement
+# Test direct du module
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    conn = get_connection()
-    if conn:
-        init_schema(conn)
+    test_conn = get_connection()
+    if test_conn:
+        init_schema(test_conn)
         print("Schéma initialisé.")
-        conn.close()
+        test_conn.close()
