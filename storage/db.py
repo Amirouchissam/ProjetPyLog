@@ -325,6 +325,46 @@ def query_failed_invalid_users(conn) -> list:
         return []
 
 
+def query_top_invalid_users(conn, limit: int = 10) -> list:
+    """
+    Retourne les noms d'utilisateurs inexistants les plus fréquemment ciblés.
+
+    SELECT username, COUNT(*) as nb_attempts
+    FROM ssh_events
+    WHERE is_invalid_user = TRUE
+    GROUP BY username ORDER BY nb_attempts DESC
+    LIMIT %s
+
+    Retour
+    ------
+    list[tuple(username, nb_attempts)]
+
+    Erreurs possibles loggées
+    -------------------------
+    - Connexion None   → ERROR
+    - Erreur SQL       → ERROR
+    """
+    if conn is None:
+        _log.error("query_top_invalid_users() : connexion None")
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT username, COUNT(*) AS nb_attempts
+                FROM ssh_events
+                WHERE is_invalid_user = TRUE
+                GROUP BY username
+                ORDER BY nb_attempts DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+            _log.info("Requête top_invalid_users : %d utilisateurs", len(rows))
+            return rows
+    except DatabaseError as exc:
+        _log.error("query_top_invalid_users() erreur SQL : %s", exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Test rapide si exécuté directement
 # ---------------------------------------------------------------------------
