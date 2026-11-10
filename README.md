@@ -1,21 +1,21 @@
 # SSH Log Analysis Pipeline
 
 Pipeline Python d'analyse de journaux d'authentification SSH (`auth.log`).  
-Il ingère, parse, géolocalise et stocke les événements dans une base PostgreSQL, puis génère un dashboard HTML interactif.
+Il ingère, parse, géolocalise et stocke les événements dans PostgreSQL, puis produit un **dashboard image PNG** avec matplotlib.
 
 ---
 
 ## Contexte
 
-Les serveurs Linux exposés à Internet reçoivent en permanence des tentatives de connexion SSH automatisées (brute-force, scans, bots). Ce projet vise à analyser ces journaux pour :
+Les serveurs Linux exposés à Internet reçoivent en permanence des tentatives de connexion SSH automatisées. Ce projet analyse ces journaux pour :
 
-- Identifier les pays sources des attaques
+- Identifier les pays d'où proviennent les attaques
 - Recenser les connexions légitimes par utilisateur
-- Repérer les tentatives avec des utilisateurs inexistants
+- Repérer les tentatives avec des utilisateurs inexistants sur le système
 
 ---
 
-## Architecture du projet
+## Architecture
 
 ```
 log_analysis/
@@ -23,7 +23,7 @@ log_analysis/
 ├── data/                       # Fichiers auth.log bruts (.log, .gz)
 │
 ├── logger/
-│   └── app_logger.py           # Logger centralisé (fichier + console)
+│   └── app_logger.py           # Logger centralisé (RotatingFileHandler + console)
 │
 ├── ingestion/
 │   └── raw.py                  # Lecture de tous les fichiers de logs
@@ -36,195 +36,154 @@ log_analysis/
 │   └── db.py                   # PostgreSQL : schéma, insertion, requêtes
 │
 ├── serving/
-│   ├── dashboard.py            # Génération du dashboard HTML
-│   └── dashboard.html          # Fichier généré (ouvrir dans le navigateur)
+│   ├── dashboard.py            # Génération du dashboard PNG (matplotlib)
+│   └── dashboard.png           # Image générée (ouvrir avec n'importe quel viewer)
 │
 ├── logs/
-│   └── app.log                 # Logs applicatifs (créé automatiquement)
+│   └── app.log                 # Logs applicatifs (rotation automatique)
 │
 ├── main.py                     # Orchestrateur du pipeline
-├── pyproject.toml              # Dépendances (uv)
+├── pyproject.toml
 └── README.md
 ```
 
 ---
 
+## Packages Python utilisés
+
+Uniquement les packages vus en cours ou autorisés explicitement :
+
+| Package | Origine | Usage |
+|---------|---------|-------|
+| `logging` + `RotatingFileHandler` | Stdlib — vu en cours | Logs applicatifs par module |
+| `re` | Stdlib — vu en cours | Parsing regex du auth.log |
+| `gzip` | Stdlib | Lecture des fichiers .gz |
+| `json`, `urllib` | Stdlib | Appels HTTP géolocalisation |
+| `pathlib`, `os` | Stdlib | Gestion des chemins |
+| `io`, `socket` | Stdlib | Réseau et buffers |
+| `argparse`, `time` | Stdlib | CLI et chronométrage |
+| `matplotlib` | Installé dans le projet | Graphiques du dashboard PNG |
+| `psycopg2-binary` | Autorisé par le prof | Connexion PostgreSQL |
+
+---
+
 ## Prérequis
 
-| Outil       | Version minimum |
-|-------------|----------------|
-| Python      | 3.14+          |
-| uv          | 0.5+           |
-| PostgreSQL  | 14+            |
-
-Paquets Python utilisés (tous standards ou déjà installés) :
-
-| Paquet           | Usage                         |
-|-----------------|-------------------------------|
-| `psycopg2-binary` | Connexion PostgreSQL          |
-| `matplotlib`      | Génération des graphiques     |
-| `requests`        | Appels HTTP (géolocalisation) |
-| `re`, `gzip`, `logging`, `json`, `urllib` | Bibliothèque standard Python |
+- Python 3.14+
+- uv (gestionnaire de paquets)
+- PostgreSQL 14+ **sur le port 4001**
 
 ---
 
 ## Installation
 
 ```bash
-# 1. Cloner le dépôt
 git clone <url-du-depot>
 cd log_analysis
-
-# 2. Créer l'environnement virtuel et installer les dépendances
 uv sync
-
-# 3. Placer vos fichiers auth.log dans data/
-#    (formats acceptés : .log, .1, .2, .gz)
 ```
 
 ---
 
-## Configuration PostgreSQL
+## Configuration PostgreSQL (port 4001)
 
-Le projet attend une base PostgreSQL sur le **port 4001**.
-
-### Démarrage rapide (si PostgreSQL est installé localement)
+Créer la base de données une seule fois :
 
 ```bash
-# Créer la base de données
-createdb -p 4001 -U postgres log_analysis
-```
-
-### Modifier la configuration
-
-Éditer le dictionnaire `DB_CONFIG` dans [`storage/db.py`](storage/db.py) :
-
-```python
-DB_CONFIG = {
-    "host":     "localhost",
-    "port":     4001,
-    "dbname":   "log_analysis",
-    "user":     "postgres",
-    "password": "postgres",
-}
+# Avec psql
+"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -p 4001 -c "CREATE DATABASE log_analysis;"
 ```
 
 La table `ssh_events` est **créée automatiquement** au premier lancement.
 
-### Schéma de la table
+Paramètres de connexion dans `storage/db.py` :
 
-| Colonne           | Type         | Description                            |
-|-------------------|-------------|----------------------------------------|
-| `id`              | SERIAL PK   | Identifiant auto-incrémenté            |
-| `month`           | VARCHAR(3)  | Mois de l'événement (ex: `May`)        |
-| `day`             | INTEGER     | Jour du mois                           |
-| `time`            | VARCHAR(8)  | Heure `HH:MM:SS`                       |
-| `host`            | VARCHAR     | Nom de l'hôte serveur                  |
-| `service`         | VARCHAR     | Service (`sshd`)                       |
-| `event_type`      | VARCHAR(20) | `accepted`, `failed`, `invalid_user`   |
-| `ip`              | VARCHAR(45) | Adresse IP source                      |
-| `username`        | VARCHAR     | Nom d'utilisateur tenté                |
-| `is_invalid_user` | BOOLEAN     | True si l'utilisateur n'existe pas     |
-| `country`         | VARCHAR     | Pays (géolocalisation)                 |
-| `city`            | VARCHAR     | Ville (géolocalisation)                |
-| `org`             | VARCHAR     | Organisation / FAI                     |
-| `inserted_at`     | TIMESTAMP   | Date d'insertion automatique           |
+```python
+DB_CONFIG = {
+    "host":            "localhost",
+    "port":            4001,
+    "dbname":          "log_analysis",
+    "user":            "postgres",
+    "password":        "123",
+    "client_encoding": "utf8",
+}
+```
 
 ---
 
-## Utilisation
-
-### Lancement standard
+## Lancement
 
 ```bash
+# Pipeline complet (avec géolocalisation réseau)
 python main.py
-```
 
-### Options disponibles
+# Sans géolocalisation (rapide, hors ligne)
+python main.py --skip-geo
 
-```bash
-python main.py --data-dir ./data     # Répertoire des logs (défaut: ./data)
-python main.py --skip-geo            # Désactive la géolocalisation (mode hors ligne)
-python main.py --skip-db             # Mode dry-run (pas d'écriture en base)
-```
+# Dry-run (aucune écriture en base)
+python main.py --skip-db --skip-geo
 
-### Exemple de sortie
-
-```
-2026-11-09 23:50:00 | INFO     | main                          | DÉMARRAGE DU PIPELINE LOG ANALYSIS
-2026-11-09 23:50:00 | INFO     | ingestion.raw                 | Total lignes lues : 48532
-2026-11-09 23:50:01 | INFO     | processing.extract_transforme | Parsing terminé : 3812 événements extraits
-2026-11-09 23:50:45 | INFO     | processing.geo_location       | Géolocalisation terminée : 3812 enrichis
-2026-11-09 23:50:45 | INFO     | storage.db                    | Insertion terminée : 3812 insérés
-2026-11-09 23:50:46 | INFO     | serving.dashboard             | Dashboard généré : serving/dashboard.html
-2026-11-09 23:50:46 | INFO     | main                          | PIPELINE TERMINÉ en 46.3 secondes
+# Répertoire de logs personnalisé
+python main.py --data-dir ./data
 ```
 
 ---
 
-## Dashboard
+## Dashboard PNG
 
-Après le lancement, ouvrir dans le navigateur :
+Après le lancement, le fichier `serving/dashboard.png` contient 3 graphiques :
 
-```
-serving/dashboard.html
-```
-
-Le dashboard présente :
-
-1. **KPIs globaux** — total des tentatives échouées, réussies, utilisateurs invalides et pays distincts
-2. **Graphique : tentatives échouées par pays** — bar chart horizontal (Top 20 pays)
-3. **Graphique : connexions réussies par utilisateur** — bar chart (Top 15 utilisateurs)
-4. **Tableau : tentatives avec utilisateurs invalides** — Top 50 avec IP, pays et nombre de tentatives
+| Graphique | Description |
+|-----------|-------------|
+| ① Tentatives échouées par pays | Bar chart horizontal, top 15 pays sources |
+| ② Connexions réussies par utilisateur | Bar chart vertical, top 12 users |
+| ③ Utilisateurs invalides | Bar chart horizontal, top 15 logins inexistants |
 
 ---
 
 ## Logging
 
-Tous les modules écrivent dans `logs/app.log` (niveau DEBUG) et dans la console (niveau INFO).
+Format du cours : `date|level|nom_module|message`
 
-Format des logs :
 ```
-2026-11-09 23:50:00 | INFO     | processing.geo_location       | Géolocalisation réussie pour 45.148.10.152 → DE / Frankfurt
+10-11-2026 10:20:54|INFO|ingestion.raw|Total lignes lues : 65565
+10-11-2026 10:20:55|ERROR|storage.db|Connexion impossible : ...
 ```
 
-Chaque module loggue les erreurs suivantes :
+Les logs sont écrits dans `logs/app.log` avec rotation automatique (`RotatingFileHandler`, 500 Ko × 5 fichiers).
 
-| Module                  | Erreurs loggées                                      |
-|-------------------------|------------------------------------------------------|
-| `ingestion.raw`         | Répertoire introuvable, permission refusée, fichier corrompu |
-| `processing.extract`    | Ligne non parsée, exception interne                  |
-| `processing.geo_location` | Timeout réseau, HTTP non-200, JSON invalide        |
-| `storage.db`            | Connexion impossible, erreur SQL, clé manquante      |
-| `serving.dashboard`     | Données vides, erreur écriture fichier               |
-| `main`                  | Erreur critique à chaque étape (CRITICAL si fatal)   |
+Chaque module loggue ses propres erreurs :
+
+| Module | Niveaux utilisés |
+|--------|-----------------|
+| `ingestion.raw` | DEBUG, INFO, WARNING, ERROR |
+| `processing.extract_transforme` | DEBUG, INFO, WARNING, ERROR, CRITICAL |
+| `processing.geo_location` | DEBUG, INFO, WARNING, ERROR |
+| `storage.db` | INFO, WARNING, ERROR |
+| `serving.dashboard` | INFO, WARNING, ERROR |
+| `main` | INFO, WARNING, ERROR, CRITICAL |
 
 ---
 
-## Flux du pipeline
+## Commits Git progressifs
 
-```
-data/auth.log.*
-      │
-      ▼
-[ingestion.raw]          Lecture brute (texte + gzip)
-      │
-      ▼
-[processing.extract]     Regex → {event_type, ip, username, ...}
-      │
-      ▼
-[processing.geo_location] ipinfo.io → {country, city, org}
-      │
-      ▼
-[storage.db]             INSERT INTO ssh_events (PostgreSQL :4001)
-      │
-      ▼
-[serving.dashboard]      HTML avec graphiques matplotlib embarqués
-```
+| Commit | Module |
+|--------|--------|
+| `feat(logger)` | Logger avec RotatingFileHandler |
+| `feat(ingestion)` | Lecture .log + .gz |
+| `feat(processing)` | Regex SSH + géolocalisation |
+| `feat(storage)` | PostgreSQL CRUD |
+| `feat(serving)` | Dashboard PNG matplotlib |
+| `feat(main)` | Orchestrateur |
+| `docs` | README + .gitignore |
+| `fix(geo_location)` | Déduplication IPs + timeout SSL |
+| `fix(storage)` | Mot de passe + encodage UTF-8 |
+| `refactor(logger)` | RotatingFileHandler (cours) |
+| `feat(serving)` | Remplacement HTML → PNG |
 
 ---
 
 ## Auteur
 
-Projet réalisé dans le cadre du cours **Python Avancée — S5**.  
-Tous les modules sont documentés, testables individuellement et committés progressivement.
+Projet réalisé dans le cadre du cours **Python Avancée — Semestre 5**.  
+Modules : `logging`, `re`, OOP / type hints, `psycopg2`, `matplotlib`.
