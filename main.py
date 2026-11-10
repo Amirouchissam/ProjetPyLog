@@ -154,9 +154,9 @@ def run_pipeline(data_dir: str, skip_geo: bool = False, skip_db: bool = False) -
         try:
             ok = dashboard.generate(conn)
             if ok:
-                _log.info("[5/5] ✓ Dashboard généré : serving/dashboard.html")
+                _log.info("[5/5] ✓ Dashboard PNG généré : serving/dashboard.png")
             else:
-                _log.warning("[5/5] ⚠ Dashboard non généré (voir les logs)")
+                _log.warning("[5/5] ⚠ Dashboard PNG non généré (voir les logs)")
         except Exception as exc:
             _log.error("Erreur lors de la génération du dashboard : %s", exc)
         finally:
@@ -166,6 +166,7 @@ def run_pipeline(data_dir: str, skip_geo: bool = False, skip_db: bool = False) -
     elapsed = time.time() - start
     _log.info("=" * 60)
     _log.info("PIPELINE TERMINÉ en %.2f secondes", elapsed)
+    _log.info("Dashboard → serving/dashboard.png")
     _log.info("=" * 60)
     return True
 

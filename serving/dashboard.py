@@ -1,352 +1,140 @@
 """
 Module : serving/dashboard.py
-Rôle   : Générer un dashboard HTML interactif à partir des données PostgreSQL.
-         Utilise uniquement matplotlib (stdlib + matplotlib) pour les graphiques
-         exportés en PNG embarqués en base64 dans le HTML.
+Rôle   : Générer un dashboard PNG avec 3 graphiques matplotlib
+         à partir des données PostgreSQL.
 
-Dashboard produit (fichier : serving/dashboard.html) :
-  1. Nombre de tentatives échouées par pays (bar chart horizontal)
-  2. Nombre de tentatives réussies par utilisateur (bar chart)
-  3. Tentatives échouées avec utilisateurs invalides (table HTML)
+Graphiques produits dans serving/dashboard.png :
+  1. Tentatives échouées par pays        (bar chart horizontal)
+  2. Connexions réussies par utilisateur (bar chart vertical)
+  3. Tentatives avec utilisateur invalide (bar chart horizontal, top 15 users)
 """
-import base64
-import io
-import os
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")          # Backend non-interactif (pas d'écran requis)
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 from logger.app_logger import get_logger
 
 _log = get_logger("serving.dashboard")
 
-OUTPUT_DIR = Path(__file__).resolve().parent
-OUTPUT_FILE = OUTPUT_DIR / "dashboard.html"
+OUTPUT_DIR  = Path(__file__).resolve().parent
+OUTPUT_FILE = OUTPUT_DIR / "dashboard.png"
 
 
 # ---------------------------------------------------------------------------
-# Utilitaires graphiques
+# Sous-graphiques
 # ---------------------------------------------------------------------------
 
-def _fig_to_base64(fig) -> str:
+def _plot_failed_by_country(ax, data: list) -> None:
     """
-    Convertit une figure matplotlib en chaîne base64 PNG.
+    Graphique 1 : tentatives échouées par pays.
 
     Paramètres
     ----------
-    fig : matplotlib.figure.Figure
-
-    Retour
-    ------
-    str : données base64 de l'image PNG.
+    ax   : matplotlib.axes.Axes
+    data : list[tuple(country, nb_failed)]
 
     Erreurs possibles loggées
     -------------------------
-    - Erreur lors de la conversion → ERROR
-    """
-    try:
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
-        buf.seek(0)
-        encoded = base64.b64encode(buf.read()).decode("utf-8")
-        plt.close(fig)
-        return encoded
-    except Exception as exc:
-        _log.error("Erreur conversion figure en base64 : %s", exc)
-        plt.close(fig)
-        return ""
-
-
-def _chart_failed_by_country(data: list) -> str:
-    """
-    Graphique : tentatives échouées par pays.
-
-    Paramètres
-    ----------
-    data : list[tuple(country, nb_failed)]
-
-    Retour
-    ------
-    str : image PNG encodée en base64.
+    - data vide → WARNING
     """
     if not data:
-        _log.warning("Aucune donnée pour le graphique 'failed by country'")
-        return ""
+        _log.warning("Graphique 1 : aucune donnée 'failed by country'")
+        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12, color="grey")
+        ax.set_title("Tentatives échouées par pays", fontweight="bold")
+        return
 
-    countries = [row[0] for row in data[:20]]   # top 20
-    counts    = [row[1] for row in data[:20]]
+    top = data[:15]                         # top 15 pays
+    pays   = [str(r[0]) for r in top][::-1]
+    counts = [int(r[1]) for r in top][::-1]
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(countries) * 0.4)))
-    bars = ax.barh(countries[::-1], counts[::-1], color="#e74c3c")
-    ax.set_xlabel("Nombre de tentatives échouées", fontsize=11)
-    ax.set_title("Tentatives échouées par pays (Top 20)", fontsize=13, fontweight="bold")
-    ax.bar_label(bars, padding=3, fontsize=9)
+    bars = ax.barh(pays, counts, color="#e74c3c", edgecolor="white", linewidth=0.5)
+    ax.bar_label(bars, padding=4, fontsize=8, color="#2c3e50")
+    ax.set_xlabel("Nombre de tentatives", fontsize=9)
+    ax.set_title("① Tentatives échouées par pays (Top 15)", fontweight="bold", fontsize=11)
     ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-
-    _log.info("Graphique 'failed_by_country' généré (%d pays)", len(countries))
-    return _fig_to_base64(fig)
+    ax.tick_params(labelsize=9)
+    _log.info("Graphique 1 'failed_by_country' tracé (%d pays)", len(top))
 
 
-def _chart_success_by_user(data: list) -> str:
+def _plot_success_by_user(ax, data: list) -> None:
     """
-    Graphique : connexions réussies par utilisateur.
+    Graphique 2 : connexions réussies par utilisateur.
 
     Paramètres
     ----------
+    ax   : matplotlib.axes.Axes
     data : list[tuple(username, nb_success)]
 
-    Retour
-    ------
-    str : image PNG encodée en base64.
+    Erreurs possibles loggées
+    -------------------------
+    - data vide → WARNING
     """
     if not data:
-        _log.warning("Aucune donnée pour le graphique 'success by user'")
-        return ""
+        _log.warning("Graphique 2 : aucune donnée 'success by user'")
+        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12, color="grey")
+        ax.set_title("Connexions réussies par utilisateur", fontweight="bold")
+        return
 
-    users  = [row[0] for row in data[:15]]
-    counts = [row[1] for row in data[:15]]
+    top = data[:12]
+    users  = [str(r[0]) for r in top]
+    counts = [int(r[1]) for r in top]
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(users, counts, color="#2ecc71")
-    ax.set_ylabel("Nombre de connexions réussies", fontsize=11)
-    ax.set_title("Connexions réussies par utilisateur (Top 15)", fontsize=13, fontweight="bold")
-    ax.bar_label(bars, padding=3, fontsize=9)
-    plt.xticks(rotation=30, ha="right")
+    bars = ax.bar(users, counts, color="#2ecc71", edgecolor="white", linewidth=0.5)
+    ax.bar_label(bars, padding=3, fontsize=8, color="#2c3e50")
+    ax.set_ylabel("Connexions réussies", fontsize=9)
+    ax.set_title("② Connexions réussies par utilisateur (Top 12)", fontweight="bold", fontsize=11)
     ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
+    ax.tick_params(axis="x", rotation=30, labelsize=8)
+    ax.tick_params(axis="y", labelsize=9)
+    _log.info("Graphique 2 'success_by_user' tracé (%d users)", len(top))
 
-    _log.info("Graphique 'success_by_user' généré (%d utilisateurs)", len(users))
-    return _fig_to_base64(fig)
 
-
-def _table_invalid_users(data: list) -> str:
+def _plot_invalid_users(ax, data: list) -> None:
     """
-    Génère un tableau HTML pour les tentatives avec utilisateurs invalides.
+    Graphique 3 : tentatives échouées avec utilisateurs invalides.
 
     Paramètres
     ----------
+    ax   : matplotlib.axes.Axes
     data : list[tuple(username, ip, country, nb_attempts)]
 
-    Retour
-    ------
-    str : fragment HTML du tableau.
+    Erreurs possibles loggées
+    -------------------------
+    - data vide → WARNING
     """
     if not data:
-        _log.warning("Aucune donnée pour la table 'invalid users'")
-        return "<p style='color:#999'>Aucune donnée disponible.</p>"
+        _log.warning("Graphique 3 : aucune donnée 'invalid users'")
+        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12, color="grey")
+        ax.set_title("Tentatives invalides par utilisateur", fontweight="bold")
+        return
 
-    rows_html = ""
-    for username, ip, country, nb in data:
-        rows_html += f"""
-        <tr>
-          <td>{username}</td>
-          <td>{ip}</td>
-          <td>{country}</td>
-          <td style="text-align:center;font-weight:bold;color:#e74c3c">{nb}</td>
-        </tr>"""
+    top = data[:15]
+    # Label : "user (pays)"
+    labels = [f"{str(r[0])} ({str(r[2])})" for r in top][::-1]
+    counts = [int(r[3]) for r in top][::-1]
 
-    _log.info("Table 'invalid_users' générée (%d lignes)", len(data))
-    return f"""
-    <table>
-      <thead>
-        <tr>
-          <th>Utilisateur</th>
-          <th>Adresse IP</th>
-          <th>Pays</th>
-          <th>Tentatives</th>
-        </tr>
-      </thead>
-      <tbody>{rows_html}</tbody>
-    </table>"""
+    bars = ax.barh(labels, counts, color="#e67e22", edgecolor="white", linewidth=0.5)
+    ax.bar_label(bars, padding=4, fontsize=8, color="#2c3e50")
+    ax.set_xlabel("Nombre de tentatives", fontsize=9)
+    ax.set_title("③ Tentatives avec utilisateur invalide (Top 15)", fontweight="bold", fontsize=11)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(labelsize=8)
+    _log.info("Graphique 3 'invalid_users' tracé (%d entrées)", len(top))
 
 
 # ---------------------------------------------------------------------------
-# Génération du HTML complet
-# ---------------------------------------------------------------------------
-
-def _build_html(
-    chart_country: str,
-    chart_user: str,
-    table_invalid: str,
-    stats: dict,
-) -> str:
-    """
-    Assemble le HTML final du dashboard.
-
-    Paramètres
-    ----------
-    chart_country  : str — base64 PNG tentatives par pays
-    chart_user     : str — base64 PNG succès par utilisateur
-    table_invalid  : str — HTML table utilisateurs invalides
-    stats          : dict — compteurs globaux
-
-    Retour
-    ------
-    str : document HTML complet.
-    """
-    img_country = (
-        f'<img src="data:image/png;base64,{chart_country}" alt="Failed by country">'
-        if chart_country else "<p>Graphique indisponible</p>"
-    )
-    img_user = (
-        f'<img src="data:image/png;base64,{chart_user}" alt="Success by user">'
-        if chart_user else "<p>Graphique indisponible</p>"
-    )
-
-    return f"""<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Log Analysis Dashboard</title>
-  <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
-      font-family: 'Segoe UI', Arial, sans-serif;
-      background: #f0f2f5;
-      color: #333;
-      padding: 24px;
-    }}
-    h1 {{
-      text-align: center;
-      color: #2c3e50;
-      margin-bottom: 8px;
-      font-size: 2rem;
-    }}
-    .subtitle {{
-      text-align: center;
-      color: #7f8c8d;
-      margin-bottom: 32px;
-      font-size: 0.95rem;
-    }}
-    .kpi-row {{
-      display: flex;
-      gap: 16px;
-      justify-content: center;
-      flex-wrap: wrap;
-      margin-bottom: 32px;
-    }}
-    .kpi {{
-      background: white;
-      border-radius: 12px;
-      padding: 20px 32px;
-      text-align: center;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      min-width: 160px;
-    }}
-    .kpi .value {{
-      font-size: 2.2rem;
-      font-weight: bold;
-    }}
-    .kpi .label {{
-      font-size: 0.85rem;
-      color: #7f8c8d;
-      margin-top: 4px;
-    }}
-    .kpi.red   .value {{ color: #e74c3c; }}
-    .kpi.green .value {{ color: #2ecc71; }}
-    .kpi.orange .value {{ color: #e67e22; }}
-    .card {{
-      background: white;
-      border-radius: 12px;
-      padding: 24px;
-      margin-bottom: 24px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-    }}
-    .card h2 {{
-      color: #2c3e50;
-      margin-bottom: 16px;
-      font-size: 1.1rem;
-      border-left: 4px solid #3498db;
-      padding-left: 10px;
-    }}
-    .card img {{
-      max-width: 100%;
-      display: block;
-      margin: 0 auto;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-    }}
-    thead tr {{
-      background: #2c3e50;
-      color: white;
-    }}
-    th, td {{
-      padding: 10px 14px;
-      text-align: left;
-    }}
-    tbody tr:nth-child(even) {{ background: #f8f9fa; }}
-    tbody tr:hover {{ background: #eaf4fb; }}
-    .footer {{
-      text-align: center;
-      color: #bdc3c7;
-      font-size: 0.8rem;
-      margin-top: 32px;
-    }}
-  </style>
-</head>
-<body>
-  <h1>🔐 SSH Log Analysis Dashboard</h1>
-  <p class="subtitle">Analyse des journaux d'authentification SSH — Pipeline Python + PostgreSQL</p>
-
-  <!-- KPI -->
-  <div class="kpi-row">
-    <div class="kpi red">
-      <div class="value">{stats.get('total_failed', 0)}</div>
-      <div class="label">Tentatives échouées</div>
-    </div>
-    <div class="kpi green">
-      <div class="value">{stats.get('total_success', 0)}</div>
-      <div class="label">Connexions réussies</div>
-    </div>
-    <div class="kpi orange">
-      <div class="value">{stats.get('total_invalid', 0)}</div>
-      <div class="label">Utilisateurs invalides</div>
-    </div>
-    <div class="kpi">
-      <div class="value">{stats.get('total_countries', 0)}</div>
-      <div class="label">Pays distincts</div>
-    </div>
-  </div>
-
-  <!-- Graphique 1 : Tentatives échouées par pays -->
-  <div class="card">
-    <h2>🌍 Tentatives échouées par pays</h2>
-    {img_country}
-  </div>
-
-  <!-- Graphique 2 : Connexions réussies par utilisateur -->
-  <div class="card">
-    <h2>✅ Connexions réussies par utilisateur</h2>
-    {img_user}
-  </div>
-
-  <!-- Table 3 : Utilisateurs invalides -->
-  <div class="card">
-    <h2>🚫 Tentatives avec utilisateurs invalides (Top 50)</h2>
-    {table_invalid}
-  </div>
-
-  <div class="footer">
-    Généré automatiquement par log_analysis · Python + PostgreSQL (port 4001)
-  </div>
-</body>
-</html>"""
-
-
-# ---------------------------------------------------------------------------
-# Point d'entrée principal
+# Génération du PNG
 # ---------------------------------------------------------------------------
 
 def generate(conn) -> bool:
     """
-    Génère le fichier dashboard.html à partir des données PostgreSQL.
+    Génère le fichier dashboard.png (3 graphiques matplotlib).
 
     Paramètres
     ----------
@@ -354,55 +142,102 @@ def generate(conn) -> bool:
 
     Retour
     ------
-    bool : True si le fichier a été créé avec succès.
+    bool : True si l'image a été sauvegardée avec succès.
 
     Erreurs possibles loggées
     -------------------------
-    - Connexion None             → ERROR
-    - Données vides pour un KPI  → WARNING
-    - Erreur écriture du fichier → ERROR
+    - conn None                  → ERROR
+    - Données vides pour un axe  → WARNING (géré dans chaque _plot_*)
+    - Erreur sauvegarde fichier  → ERROR
+    - Exception inattendue       → ERROR
     """
     if conn is None:
         _log.error("generate() : connexion PostgreSQL None, dashboard non généré")
         return False
 
-    _log.info("Début de la génération du dashboard…")
+    _log.info("Début de la génération du dashboard PNG…")
 
-    # --- Import ici pour éviter la circularité ---
+    # Import local pour éviter la circularité
     from storage.db import (
         query_failed_by_country,
         query_success_by_user,
         query_failed_invalid_users,
     )
 
-    data_country = query_failed_by_country(conn)
-    data_user    = query_success_by_user(conn)
-    data_invalid = query_failed_invalid_users(conn)
-
-    # --- KPI globaux ---
-    stats = {
-        "total_failed":    sum(r[1] for r in data_country),
-        "total_success":   sum(r[1] for r in data_user),
-        "total_invalid":   sum(r[3] for r in data_invalid),
-        "total_countries": len(data_country),
-    }
-    _log.info("KPI globaux : %s", stats)
-
-    # --- Graphiques ---
-    chart_country = _chart_failed_by_country(data_country)
-    chart_user    = _chart_success_by_user(data_user)
-    table_invalid = _table_invalid_users(data_invalid)
-
-    # --- Écriture HTML ---
-    html_content = _build_html(chart_country, chart_user, table_invalid, stats)
-
+    # --- Récupération des données ---
     try:
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as fh:
-            fh.write(html_content)
-        _log.info("Dashboard généré : %s", OUTPUT_FILE)
+        data_country = query_failed_by_country(conn)
+        data_user    = query_success_by_user(conn)
+        data_invalid = query_failed_invalid_users(conn)
+    except Exception as exc:
+        _log.error("Erreur lors de la récupération des données : %s", exc)
+        return False
+
+    # --- KPI console ---
+    total_failed  = sum(r[1] for r in data_country)
+    total_success = sum(r[1] for r in data_user)
+    total_invalid = sum(r[3] for r in data_invalid)
+    _log.info(
+        "KPI → Échecs: %d | Succès: %d | Invalides: %d | Pays: %d",
+        total_failed, total_success, total_invalid, len(data_country)
+    )
+
+    # --- Construction de la figure ---
+    try:
+        fig = plt.figure(figsize=(18, 14))
+        fig.suptitle(
+            "SSH Log Analysis Dashboard",
+            fontsize=16, fontweight="bold", y=0.98, color="#2c3e50"
+        )
+
+        # Sous-titre KPI
+        kpi_text = (
+            f"Échecs: {total_failed}   |   "
+            f"Succès: {total_success}   |   "
+            f"Utilisateurs invalides: {total_invalid}   |   "
+            f"Pays distincts: {len(data_country)}"
+        )
+        fig.text(0.5, 0.945, kpi_text, ha="center", fontsize=10,
+                 color="#7f8c8d", style="italic")
+
+        # Mise en page : graphique 1 en haut, 2 et 3 en bas
+        gs = gridspec.GridSpec(2, 2, figure=fig,
+                               hspace=0.45, wspace=0.35,
+                               top=0.92, bottom=0.07,
+                               left=0.08, right=0.97)
+
+        ax1 = fig.add_subplot(gs[0, :])   # Ligne 0, toute la largeur
+        ax2 = fig.add_subplot(gs[1, 0])   # Ligne 1, colonne gauche
+        ax3 = fig.add_subplot(gs[1, 1])   # Ligne 1, colonne droite
+
+        _plot_failed_by_country(ax1, data_country)
+        _plot_success_by_user(ax2, data_user)
+        _plot_invalid_users(ax3, data_invalid)
+
+        # Fond général
+        fig.patch.set_facecolor("#f8f9fa")
+        for ax in (ax1, ax2, ax3):
+            ax.set_facecolor("#ffffff")
+
+    except Exception as exc:
+        _log.error("Erreur lors de la construction des graphiques : %s", exc)
+        plt.close("all")
+        return False
+
+    # --- Sauvegarde PNG ---
+    try:
+        fig.savefig(OUTPUT_FILE, dpi=150, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        plt.close(fig)
+        _log.info("Dashboard PNG sauvegardé : %s", OUTPUT_FILE)
         return True
     except OSError as exc:
-        _log.error("Impossible d'écrire le dashboard : %s", exc)
+        _log.error("Impossible d'écrire le dashboard PNG : %s", exc)
+        plt.close(fig)
+        return False
+    except Exception as exc:
+        _log.error("Erreur inattendue lors de la sauvegarde : %s", exc)
+        plt.close(fig)
         return False
 
 
@@ -415,7 +250,6 @@ if __name__ == "__main__":
     if conn:
         ok = generate(conn)
         conn.close()
-        if ok:
-            print(f"Dashboard généré : {OUTPUT_FILE}")
+        print(f"Dashboard PNG : {OUTPUT_FILE}" if ok else "Échec")
     else:
         print("Connexion PostgreSQL impossible.")

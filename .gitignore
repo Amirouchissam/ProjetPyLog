@@ -14,6 +14,7 @@ logs/
 
 # Dashboard généré
 serving/dashboard.html
+serving/dashboard.png
 
 # Data sensible
 data/
