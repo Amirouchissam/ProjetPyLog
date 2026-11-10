@@ -6,13 +6,18 @@ Rôle   : Fournir un logger centralisé pour chaque module de l'application.
 """
 import logging
 import os
+import sys
 from pathlib import Path
 
 # ------------------------------------------------------------------
 # Répertoire de logs : on le crée s'il n'existe pas
 # ------------------------------------------------------------------
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except (OSError, PermissionError) as exc:
+    print(f"[app_logger] Impossible de créer le répertoire de logs : {exc}", file=sys.stderr)
+
 LOG_FILE = LOG_DIR / "app.log"
 
 # Format unique pour tous les loggers
