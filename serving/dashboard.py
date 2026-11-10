@@ -9,14 +9,13 @@ Graphiques demandés :
   2. Nombre de tentatives réussies par utilisateur
   3. Tentatives échouées avec utilisateurs invalides (invalid user)
 """
+import os
 import sys
-from pathlib import Path
 from typing import Optional
 
 # Permettre l'exécution directe du script depuis n'importe quel dossier
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if "." not in sys.path:
+    sys.path.insert(0, ".")
 
 import matplotlib
 matplotlib.use("Agg")  # Mode sans interface graphique
@@ -26,8 +25,8 @@ from logger.app_logger import get_logger
 
 _log = get_logger("serving.dashboard")
 
-OUTPUT_DIR: Path = Path(__file__).resolve().parent
-OUTPUT_FILE: Path = OUTPUT_DIR / "dashboard.png"
+OUTPUT_DIR: str = "serving"
+OUTPUT_FILE: str = os.path.join(OUTPUT_DIR, "dashboard.png")
 
 
 def _plot_failed_by_country(ax: plt.Axes, data: list) -> None:
@@ -197,7 +196,7 @@ def generate(conn) -> bool:
         _plot_invalid_users(ax_invalid, data_invalid)
 
         # Sauvegarde du fichier PNG
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
         fig.savefig(OUTPUT_FILE, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
         plt.close(fig)
 
